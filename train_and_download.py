@@ -71,37 +71,6 @@ def check_gpu():
 
 check_gpu()
 
-# Функции для работы с Google Drive через PyDrive
-def get_drive():
-    from pydrive.auth import GoogleAuth
-    from pydrive.drive import GoogleDrive
-    gauth = GoogleAuth()
-    gauth.LocalWebserverAuth()  # Запускает локальный веб-сервер для аутентификации
-    drive = GoogleDrive(gauth)
-    return drive
-
-def upload_file_to_drive(local_file_path, drive_folder_id, drive):
-    """
-    Загружает файл на Google Drive в указанную папку.
-    Если происходит ошибка, она логируется, но исключение не выбрасывается.
-    """
-    try:
-        file_name = os.path.basename(local_file_path)
-        query = f"'{drive_folder_id}' in parents and title = '{file_name}' and trashed=false"
-        file_list = drive.ListFile({'q': query}).GetList()
-        if file_list:
-            gfile = file_list[0]
-            gfile.SetContentFile(local_file_path)
-            gfile.Upload()
-            logging.info(f"Файл {file_name} обновлен на Google Drive в папке {drive_folder_id}.")
-        else:
-            gfile = drive.CreateFile({'title': file_name, 'parents': [{'id': drive_folder_id}]})
-            gfile.SetContentFile(local_file_path)
-            gfile.Upload()
-            logging.info(f"Файл {file_name} загружен на Google Drive в папку {drive_folder_id}.")
-    except Exception as e:
-        logging.error(f"Ошибка при загрузке файла {local_file_path} на Google Drive: {e}")
-
 
 def ensure_directory(path):
     os.makedirs(path, exist_ok=True)
