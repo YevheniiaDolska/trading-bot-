@@ -37,6 +37,7 @@ from sklearn.base import clone
 from datetime import datetime
 import joblib, glob, shutil, logging, dill, time
 from datetime import datetime
+from utils_output import ensure_directory, copy_output, save_model_output
   
 
 # Логирование
@@ -1498,6 +1499,9 @@ def train_ensemble_model(data, selected_features, model_filename='models/bearish
         ensure_directory(dir_path)
     joblib.dump(save_data, model_filename)
     logging.info(f"[Ensemble] Ансамбль сохранён в {model_filename}")
+    
+    output_dir = os.path.join(os.getcwd(), "output", "bearish_ensemble")
+    copy_output("Ensemble_Bearish", output_dir)
     
     return {"ensemble_model": ensemble_model, "scaler": scaler, "features": selected_features}
 

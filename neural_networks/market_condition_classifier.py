@@ -43,7 +43,8 @@ import matplotlib.pyplot as plt
 import tensorflow.keras.backend as K
 from sklearn.model_selection import StratifiedKFold
 from sklearn.dummy import DummyClassifier
-from scipy.stats import zscore  
+from scipy.stats import zscore
+from utils_output import ensure_directory, copy_output, save_model_output
 
 
 
@@ -855,8 +856,10 @@ class MarketClassifier:
                 final_model.save(model_path)
                 joblib.dump(xgb_model, "xgb_model.pkl")  # ✅ Сохраняем XGBoost отдельно
                 logging.info(f"Финальная модель LSTM-GRU сохранена в {model_path}")
-                logging.info(f"XGBoost-модель сохранена в xgb_model.pkl")
-
+                logging.info(f"XGBoost-модель сохранена в bullish_xgb_model.pkl")
+                
+                output_dir = os.path.join(os.getcwd(), "output", "market_condition_classifier")
+                copy_output("Market_Classifier", output_dir)
 
                 return final_model
             else:

@@ -42,6 +42,7 @@ from xgboost import XGBClassifier
 from sklearn.metrics import f1_score
 import joblib
 from filterpy.kalman import KalmanFilter
+from utils_output import ensure_directory, copy_output, save_model_output
 
 
 
@@ -1180,6 +1181,8 @@ def build_bearish_neural_network(data):
         try:
             model.save("bearish_neural_network.h5")
             logging.info("Модель успешно сохранена в 'bearish_neural_network.h5'")
+            output_dir = os.path.join(os.getcwd(), "output", "bearish_neural_network")
+            copy_output("Neural_Bearish", output_dir)
         except Exception as e:
             logging.error(f"Ошибка при сохранении модели: {e}")
     

@@ -41,6 +41,7 @@ from threading import Lock
 import joblib
 from xgboost import XGBClassifier
 from filterpy.kalman import KalmanFilter
+from utils_output import ensure_directory, copy_output, save_model_output
 
 
 
@@ -1211,6 +1212,8 @@ def build_bullish_neural_network(data):
     try:
         model.save("bullish_neural_network.h5")
         logging.info("Модель успешно сохранена в 'bullish_neural_network.h5'")
+        output_dir = os.path.join(os.getcwd(), "output", "bullish_neural_network")
+        copy_output("Neural_Bullish", output_dir)
     except Exception as e:
         logging.error(f"Ошибка при сохранении модели: {e}")
     

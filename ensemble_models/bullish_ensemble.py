@@ -33,6 +33,7 @@ import tensorflow as tf
 from threading import Lock
 import time
 from sklearn.model_selection import GridSearchCV
+from utils_output import ensure_directory, copy_output, save_model_output
 
 
 # Логирование
@@ -1501,6 +1502,9 @@ def train_ensemble_model(data, selected_features, model_filename='bullish_stacke
     ensure_directory(os.path.dirname(ensemble_checkpoint_path))
     joblib.dump(save_data, ensemble_checkpoint_path)
     logging.info(f"[Ensemble] Ансамбль (3-класса) сохранён в {ensemble_checkpoint_path}")
+    
+    output_dir = os.path.join(os.getcwd(), "output", "bullish_ensemble")
+    copy_output("Ensemble_Bullish", output_dir)
     
     return {"ensemble_model": ensemble_model, "scaler": scaler, "features": selected_features}
 

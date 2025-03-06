@@ -42,6 +42,7 @@ from sklearn.feature_selection import SelectKBest, f_classif
 from xgboost import XGBClassifier
 import xgboost as xgb  # если потребуется
 import joblib
+from utils_output import ensure_directory, copy_output, save_model_output
 
 
 
@@ -1195,6 +1196,8 @@ def build_flat_neural_network(data, model_filename):
     try:
         model.save(model_filename)
         logging.info(f"Модель сохранена в {model_filename}")
+        output_dir = os.path.join(os.getcwd(), "output", "flat_neural_network")
+        copy_output("Neural_Flat", output_dir)
     except Exception as e:
         logging.error(f"Ошибка при сохранении модели: {e}")
     
