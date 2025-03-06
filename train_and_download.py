@@ -11,7 +11,7 @@ import requests
 # -----------------------------------------------------------------------------
 
 # POD_ID и RUNPOD_API_KEY для управления подом (если нужно остановить под после обучения)
-POD_ID = "YOUR_POD_ID_HERE"  # Замените на реальный POD_ID
+POD_ID = "zeqm08zb5eg1ik"  # Замените на реальный POD_ID
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 
 # Абсолютный путь к репозиторию
