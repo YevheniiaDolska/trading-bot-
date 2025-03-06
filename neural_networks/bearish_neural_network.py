@@ -47,18 +47,24 @@ from filterpy.kalman import KalmanFilter
 
 def initialize_strategy():
     """
-    Инициализирует TPU, если доступен, или возвращает стратегию для CPU/GPU.
+    Инициализирует стратегию для GPU, если они доступны.
+    Если GPU нет, возвращает стандартную стратегию (CPU или один GPU, если он есть).
     """
-    try:
-        tpu = tf.distribute.cluster_resolver.TPUClusterResolver()  # TPU detection
-        print('Running on TPU ', tpu.cluster_spec().as_dict()['worker'])
-        tf.config.experimental_connect_to_cluster(tpu)
-        tf.tpu.experimental.initialize_tpu_system(tpu)
-        strategy = tf.distribute.TPUStrategy(tpu)
-    except ValueError:
-        print('Not connected to a TPU runtime. Using default strategy.')
-        strategy = tf.distribute.get_strategy()  # Fallback to CPU/GPU strategy
-    print('Running with strategy:', strategy)
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            # Опционально: включаем динамическое выделение памяти,
+            # чтобы TensorFlow не занимал всю память сразу
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            strategy = tf.distribute.MirroredStrategy()  # Распределённая стратегия для одного или нескольких GPU
+            print("Running on GPU(s) with strategy:", strategy)
+        except RuntimeError as e:
+            print("Ошибка при инициализации GPU-стратегии:", e)
+            strategy = tf.distribute.get_strategy()
+    else:
+        print("GPU не найдены. Используем стандартную стратегию.")
+        strategy = tf.distribute.get_strategy()
     return strategy
 
 
