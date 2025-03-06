@@ -15,28 +15,28 @@ POD_ID = "zeqm08zb5eg1ik"  # Замените на реальный POD_ID
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 
 # Абсолютный путь к репозиторию
-BASE_REPO_DIR = "/workspace/trading-bot-"
+BASE_REPO_DIR = "/trading-bot-"
 
-# Жестко прописанные пути к обучающим скриптам
+# Формируем пути к скриптам динамически через os.path.join
 SCRIPTS = [
-    ("/workspace/trading-bot-/neural_networks/market_condition_classifier.py", "Market_Classifier"),
-    ("/workspace/trading-bot-/neural_networks/bullish_neural_network.py", "Neural_Bullish"),
-    ("/workspace/trading-bot-/ensemble_models/bullish_ensemble.py", "Ensemble_Bullish"),
-    ("/workspace/trading-bot-/neural_networks/flat_neural_network.py", "Neural_Flat"),
-    ("/workspace/trading-bot-/ensemble_models/flat_ensemble.py", "Ensemble_Flat"),
-    ("/workspace/trading-bot-/neural_networks/bearish_neural_network.py", "Neural_Bearish"),
-    ("/workspace/trading-bot-/ensemble_models/bearish_ensemble.py", "Ensemble_Bearish")
+    (os.path.join(BASE_REPO_DIR, "neural_networks", "market_condition_classifier.py"), "Market_Classifier"),
+    (os.path.join(BASE_REPO_DIR, "neural_networks", "bullish_neural_network.py"), "Neural_Bullish"),
+    (os.path.join(BASE_REPO_DIR, "ensemble_models", "bullish_ensemble.py"), "Ensemble_Bullish"),
+    (os.path.join(BASE_REPO_DIR, "neural_networks", "flat_neural_network.py"), "Neural_Flat"),
+    (os.path.join(BASE_REPO_DIR, "ensemble_models", "flat_ensemble.py"), "Ensemble_Flat"),
+    (os.path.join(BASE_REPO_DIR, "neural_networks", "bearish_neural_network.py"), "Neural_Bearish"),
+    (os.path.join(BASE_REPO_DIR, "ensemble_models", "bearish_ensemble.py"), "Ensemble_Bearish"),
 ]
 
-# Предполагаемые папки с результатами, которые создают ваши скрипты (измените, если нужно)
+# Аналогично для выходных директорий
 EXPECTED_OUTPUT = {
-    "Market_Classifier": "/workspace/trading-bot-/neural_networks/output/market_condition_classifier",
-    "Neural_Bullish": "/workspace/trading-bot-/neural_networks/output/bullish_neural_network",
-    "Ensemble_Bullish": "/workspace/trading-bot-/ensemble_models/output/bullish_ensemble",
-    "Neural_Flat": "/workspace/trading-bot-/neural_networks/output/flat_neural_network",
-    "Ensemble_Flat": "/workspace/trading-bot-/ensemble_models/output/flat_ensemble",
-    "Neural_Bearish": "/workspace/trading-bot-/neural_networks/output/bearish_neural_network",
-    "Ensemble_Bearish": "/workspace/trading-bot-/ensemble_models/output/bearish_ensemble"
+    "Market_Classifier": os.path.join(BASE_REPO_DIR, "neural_networks", "output", "market_condition_classifier"),
+    "Neural_Bullish": os.path.join(BASE_REPO_DIR, "neural_networks", "output", "bullish_neural_network"),
+    "Ensemble_Bullish": os.path.join(BASE_REPO_DIR, "ensemble_models", "output", "bullish_ensemble"),
+    "Neural_Flat": os.path.join(BASE_REPO_DIR, "neural_networks", "output", "flat_neural_network"),
+    "Ensemble_Flat": os.path.join(BASE_REPO_DIR, "ensemble_models", "output", "flat_ensemble"),
+    "Neural_Bearish": os.path.join(BASE_REPO_DIR, "neural_networks", "output", "bearish_neural_network"),
+    "Ensemble_Bearish": os.path.join(BASE_REPO_DIR, "ensemble_models", "output", "bearish_ensemble"),
 }
 
 # Жестко прописанные целевые пути для сохранения результатов
@@ -133,7 +133,7 @@ def stop_and_remove_pod():
     try:
         subprocess.run(["pip", "install", "runpod"], check=True)
     except subprocess.CalledProcessError:
-        print("Ошибка установки runpod CLI, пропускаем остановку пода.")
+        print("Ошибка установки runpod CLI, под не будет остановлен.")
         return
     try:
         response = requests.get("https://api.runpod.io/v2/pod/list",
@@ -145,7 +145,7 @@ def stop_and_remove_pod():
                           headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"})
             print(f"Под {POD_ID} остановлен.")
             requests.delete(f"https://api.runpod.io/v2/pod/{POD_ID}",
-                          headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"})
+                            headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"})
             print(f"Под {POD_ID} удалён.")
         else:
             print("Подов не найдено. Проверьте POD_ID.")
