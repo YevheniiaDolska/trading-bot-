@@ -72,14 +72,14 @@ def initialize_strategy():
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+network_name = "bearish_neural_network"  # Имя модели
+checkpoint_path_regular = os.path.join("/workspace/checkpoints", f"{network_name}_checkpoint_epoch_{{epoch:02d}}.h5")
+checkpoint_path_best = os.path.join("/workspace/checkpoints", f"{network_name}_best_model.h5")
+
 # Имя файла для сохранения модели
 nn_model_filename = os.path.join("/workspace/saved_models", 'bearish_nn_model.h5')
 log_file = os.path.join("/workspace/logs", "training_log_bearish_nn.txt")
 
-
-network_name = "bearish_neural_network"  # Имя модели
-checkpoint_path_regular = os.path.join("/workspace/checkpoints", f"{network_name}_checkpoint_epoch_{{epoch:02d}}.h5")
-checkpoint_path_best = os.path.join("/workspace/checkpoints", f"{network_name}_best_model.h5")
 
 def save_logs_to_file(log_message):
     with open(log_file, 'a') as log_f:
@@ -1016,7 +1016,7 @@ def prepare_timestamp_column(data):
     return data
 
 
-def build_bearish_neural_network(data):
+def build_bearish_neural_network(data, network_name, checkpoint_path_regular, checkpoint_path_best):
     """
     Обучает нейронную сеть для медвежьего рынка с корректной обработкой временной метки.
     
@@ -1252,7 +1252,12 @@ if __name__ == "__main__":
         if data.empty:
             raise ValueError("❌ Ошибка: После очистки данные пусты!")
         logging.info("🚀 Начало обучения модели для медвежьего рынка...")
-        build_bearish_neural_network(data)
+        build_bearish_neural_network(
+            data,
+            network_name="bearish_neural_network",
+            checkpoint_path_regular,
+            checkpoint_path_best
+        )
     except Exception as e:
         logging.error(f"❌ Ошибка во время выполнения программы: {e}")
     finally:
