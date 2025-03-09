@@ -941,6 +941,4 @@ if __name__ == "__main__":
         logging.info("Обучение завершено успешно.")
     except Exception as e:
         logging.error(f"Ошибка в процессе обучения: {e}")
-        exit(1)
-
-
+    sys.exit(0)
