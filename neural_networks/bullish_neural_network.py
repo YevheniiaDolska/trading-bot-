@@ -72,6 +72,10 @@ def initialize_strategy():
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+network_name = "bullish_neural_network"
+checkpoint_path_regular = f"checkpoints/{network_name}_checkpoint_epoch_{{epoch:02d}}.h5"
+checkpoint_path_best = f"checkpoints/{network_name}_best_model.h5"
+
 # Имя файла для сохранения модели
 nn_model_filename = os.path.join("/workspace/saved_models", 'bullish_nn_model.h5')
 log_file = os.path.join("/workspace/logs", "training_log_bullish_nn.txt")
@@ -1002,10 +1006,6 @@ def build_bullish_neural_network(data):
     
     # Создаем директории для чекпоинтов
     os.makedirs("checkpoints", exist_ok=True)
-    
-    network_name = "bullish_neural_network"
-    checkpoint_path_regular = f"checkpoints/{network_name}_checkpoint_epoch_{{epoch:02d}}.h5"
-    checkpoint_path_best = f"checkpoints/{network_name}_best_model.h5"
     
     if os.path.exists("bullish_neural_network.h5"):
         try:

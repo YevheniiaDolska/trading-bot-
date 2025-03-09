@@ -1016,7 +1016,7 @@ def prepare_timestamp_column(data):
     return data
 
 
-def build_bearish_neural_network(data, network_name, checkpoint_path_regular, checkpoint_path_best):
+def build_bearish_neural_network(data):
     """
     Обучает нейронную сеть для медвежьего рынка с корректной обработкой временной метки.
     
@@ -1252,12 +1252,7 @@ if __name__ == "__main__":
         if data.empty:
             raise ValueError("❌ Ошибка: После очистки данные пусты!")
         logging.info("🚀 Начало обучения модели для медвежьего рынка...")
-        build_bearish_neural_network(
-            data,
-            network_name="bearish_neural_network",
-            checkpoint_path_regular,
-            checkpoint_path_best
-        )
+        build_bearish_neural_network(data)
     except Exception as e:
         logging.error(f"❌ Ошибка во время выполнения программы: {e}")
     finally:
