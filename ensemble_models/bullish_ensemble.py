@@ -41,7 +41,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("debug_log_bullish_ensemble.log", encoding="utf-8"),
+        logging.FileHandler(os.path.join("/workspace/logs", "debug_log_bullish_ensemble.log"), encoding="utf-8"),
         logging.StreamHandler(sys.stdout)  # Вывод в консоль с поддержкой юникода
     ]
 )
@@ -50,11 +50,12 @@ logging.basicConfig(
 # Имя файла для сохранения модели
 market_type = "bullish"
 
-ensemble_model_filename = 'bullish_stacked_ensemble_model.pkl'
+ensemble_model_filename = os.path.join("/workspace/saved_models", "bullish_stacked_ensemble_model.pkl")
 
-checkpoint_base_dir = f"checkpoints/{market_type}"
+checkpoint_base_dir = os.path.join("/workspace/checkpoints", market_type)
 
-ensemble_checkpoint_path = os.path.join(checkpoint_base_dir, f"{market_type}_ensemble_checkpoint.pkl")
+ensemble_checkpoint_path = os.path.join("/workspace/checkpoints", market_type, model_name)
+
 
 def initialize_strategy():
     """
@@ -334,7 +335,8 @@ class CheckpointLightGBM(LGBMClassifier):
     def fit(self, X, y, **kwargs):
         logging.info("[LightGBM] Начало обучения с чекпоинтами")
         model_path = os.path.join(self._checkpoint_path, "lightgbm_checkpoint")
-        final_checkpoint = f"{model_path}_final.joblib"
+        final_checkpoint = os.path.join("/workspace/saved_models", "bearish_stacked_ensemble_model.pkl")
+
         
         # Проверяем существующий чекпоинт
         if os.path.exists(final_checkpoint):
@@ -501,7 +503,19 @@ def debug_target_presence(data, stage_name):
     else:
         print("ВНИМАНИЕ: Колонка 'target' отсутствует!")
     print("=" * 50)
-    
+
+
+def save_logs_to_file(message):
+    """
+    Сохраняет логи в файл внутри директории /workspace/logs.
+    """
+    log_dir = "/workspace/logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "trading_logs.txt")
+    with open(log_file, "a") as f:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        f.write(f"{timestamp} - {message}\n")
+
 
 # Функция загрузки данных с использованием многопоточности
 def load_all_data(symbols, start_date, end_date, interval):
@@ -531,7 +545,7 @@ def load_all_data(symbols, start_date, end_date, interval):
 
 # Получение исторических данных
 
-def get_historical_data(symbols, bullish_periods, interval="1m", save_path="binance_data_bullish.csv"):
+def get_historical_data(symbols, bullish_periods, interval="1m", save_path="/workspace/data/binance_data_bullish.csv"):
     """
     Скачивает исторические данные с Binance (архив) и сохраняет в один CSV-файл.
 
@@ -663,7 +677,7 @@ def get_historical_data(symbols, bullish_periods, interval="1m", save_path="bina
     return save_path
 
 
-def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="binance_data_bullish.csv"):
+def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="/workspace/data/binance_data_bullish.csv"):
     """
     Загружает данные для флэтового рынка для заданных символов и периодов.
     Если файл save_path уже существует, новые данные объединяются с уже сохранёнными.
@@ -1503,7 +1517,7 @@ def train_ensemble_model(data, selected_features, model_filename='bullish_stacke
     joblib.dump(save_data, ensemble_checkpoint_path)
     logging.info(f"[Ensemble] Ансамбль (3-класса) сохранён в {ensemble_checkpoint_path}")
     
-    output_dir = os.path.join(os.getcwd(), "output", "bullish_ensemble")
+    output_dir = os.path.join("/workspace/output", "bullish_ensemble")
     copy_output("Ensemble_Bullish", output_dir)
     
     return {"ensemble_model": ensemble_model, "scaler": scaler, "features": selected_features}
@@ -1518,22 +1532,17 @@ if __name__ == "__main__":
     
     # Инициализация клиента Binance
     
-    symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
+    symbols = ['BTCUSDC', 'ETHUSDC']
         
     bullish_periods = [
-            {"start": "2017-06-01", "end": "2017-08-31"},
-            {"start": "2017-11-01", "end": "2018-01-16"},
-            {"start": "2020-11-01", "end": "2021-01-31"},
-            {"start": "2021-03-01", "end": "2021-04-30"},
-            {"start": "2021-08-15", "end": "2021-10-20"},
-            {"start": "2023-02-01", "end": "2023-03-31"},
-            {"start": "2023-03-15", "end": "2023-05-15"},
-            {"start": "2024-04-01", "end": "2024-06-30"}
+        
+            {"start": "2020-11-01", "end": "2020-12-01"},
+
         ]
 
 
 
-    data_dict = load_bullish_data(symbols, bullish_periods, interval="1m")
+    data_dict = load_bullish_data(symbols, bullish_periods, interval="1m", save_path="/workspace/data/binance_data_bullish.csv")
 
     # Проверяем, что словарь не пустой
     if not data_dict:

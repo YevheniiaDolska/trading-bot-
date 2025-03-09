@@ -73,12 +73,13 @@ def initialize_strategy():
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Имя файла для сохранения модели
-nn_model_filename = os.path.join(os.getcwd(),'bearish_nn_model.h5')
-log_file = 'training_log_bearish_nn.txt'
+nn_model_filename = os.path.join("/workspace/saved_models", 'bearish_nn_model.h5')
+log_file = os.path.join("/workspace/logs", "training_log_bearish_nn.txt")
+
 
 network_name = "bearish_neural_network"  # Имя модели
-checkpoint_path_regular = f"checkpoints/{network_name}_checkpoint_epoch_{{epoch:02d}}.h5"
-checkpoint_path_best = f"checkpoints/{network_name}_best_model.h5"
+checkpoint_path_regular = os.path.join("/workspace/checkpoints", f"{network_name}_checkpoint_epoch_{{epoch:02d}}.h5")
+checkpoint_path_best = os.path.join("/workspace/checkpoints", f"{network_name}_best_model.h5")
 
 def save_logs_to_file(log_message):
     with open(log_file, 'a') as log_f:
@@ -395,7 +396,8 @@ def load_all_data(symbols, start_date, end_date, interval='1m'):
 
 
 # Получение исторических данных
-def get_historical_data(symbols, bearish_periods, interval="1m", save_path="binance_data_bearish.csv"):
+def get_historical_data(symbols, bearish_periods, interval="1m", save_path="/workspace/data/binance_data_bearish.csv"
+):
     """
     Скачивает исторические данные с Binance (архив) и сохраняет в один CSV-файл.
 
@@ -1164,7 +1166,7 @@ def build_bearish_neural_network(data):
                                        restore_best_weights=True, mode='min')
     
         history = model.fit(train_dataset,
-                            epochs=200,
+                            epochs=1, #200
                             validation_data=val_dataset,
                             class_weight={0: 1.0, 1: 2.0, 2: 3.0},
                             verbose=1,
@@ -1179,12 +1181,15 @@ def build_bearish_neural_network(data):
         logging.info("Очистка завершена. Сохранена только лучшая модель.")
     
         try:
-            model.save("bearish_neural_network.h5")
-            logging.info("Модель успешно сохранена в 'bearish_neural_network.h5'")
-            output_dir = os.path.join(os.getcwd(), "output", "bearish_neural_network")
+            model_save_path = os.path.join("/workspace/saved_models", "bearish_neural_network.h5")
+            os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+            model.save(model_save_path)
+            logging.info(f"Модель успешно сохранена в '{model_save_path}'")
+            output_dir = os.path.join("/workspace/output", "bearish_neural_network")
             copy_output("Neural_Bearish", output_dir)
         except Exception as e:
             logging.error(f"Ошибка при сохранении модели: {e}")
+
     
         logging.info("Этап ансамблирования: извлечение эмбеддингов и обучение XGBoost для медвежьего рынка.")
         try:
@@ -1203,8 +1208,10 @@ def build_bearish_neural_network(data):
             ensemble_f1 = f1_score(y_val, ensemble_val_pred_class, average='weighted')
             logging.info(f"Этап ансамблирования: F1-score ансамбля на валидации = {ensemble_f1:.4f}")
     
-            joblib.dump(xgb_model, "xgb_model_bearish.pkl")
-            logging.info("XGBoost-модель сохранена в 'xgb_model_bearish.pkl'")
+            xgb_save_path = os.path.join("/workspace/saved_models", "xgb_model_bearish.pkl")
+            joblib.dump(xgb_model, xgb_save_path)
+            logging.info(f"XGBoost-модель сохранена в '{xgb_save_path}'")
+
     
             ensemble_model = {"nn_model": model,
                               "xgb_model": xgb_model,
@@ -1221,15 +1228,10 @@ if __name__ == "__main__":
     try:
         strategy = initialize_strategy()
         
-        symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
+        symbols = ['BTCUSDC', 'ETHUSDC']
         
         bearish_periods = [
-            {"start": "2018-01-17", "end": "2018-03-31"},
-            {"start": "2018-09-01", "end": "2018-12-31"},
-            {"start": "2021-05-12", "end": "2021-08-31"},
-            {"start": "2022-05-01", "end": "2022-07-31"},
-            {"start": "2022-09-01", "end": "2022-12-15"},
-            {"start": "2022-12-16", "end": "2023-01-31"}
+            {"start": "2021-05-12", "end": "2021-06-12"},
         ]
         
         logging.info("🔄 Загрузка данных для медвежьего периода...")

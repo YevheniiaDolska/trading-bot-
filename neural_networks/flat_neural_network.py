@@ -73,13 +73,13 @@ def initialize_strategy():
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Имя файла для сохранения модели
-nn_model_filename = 'flat_nn_model.h5'
-log_file = 'training_log_flat_nn.txt'
+nn_model_filename = os.path.join("/workspace/saved_models", 'flat_nn_model.h5')
+log_file = os.path.join("/workspace/logs", "training_log_flat_nn.txt")
+
 
 network_name = "flat_neural_network"  # Имя модели
-checkpoint_path_regular = f"checkpoints/{network_name}_checkpoint_epoch_{{epoch:02d}}.h5"
-checkpoint_path_best = f"checkpoints/{network_name}_best_model.h5"
-
+checkpoint_path_regular = os.path.join("/workspace/checkpoints", f"{network_name}_checkpoint_epoch_{{epoch:02d}}.h5")
+checkpoint_path_best = os.path.join("/workspace/checkpoints", f"{network_name}_best_model.h5")
 
 
 def save_logs_to_file(log_message):
@@ -415,7 +415,8 @@ def load_all_data(symbols, start_date, end_date, interval='1m'):
         raise
 
 
-def get_historical_data(symbols, flat_periods, interval="1m", save_path="binance_data_flat.csv"):
+def get_historical_data(symbols, flat_periods, interval="1m", save_path="/workspace/data/binance_data_flat.csv"
+):
     """
     Скачивает исторические данные с Binance (архив) и сохраняет в один CSV-файл.
 
@@ -1134,7 +1135,7 @@ def build_flat_neural_network(data, model_filename):
     # Обучение модели
     history = model.fit(
         train_dataset,
-        epochs=200,
+        epochs=1, #200
         validation_data=val_dataset,
         class_weight=class_weights,
         callbacks=[
@@ -1176,8 +1177,10 @@ def build_flat_neural_network(data, model_filename):
         logging.info(f"Этап ансамблирования: F1-score ансамбля на валидации = {ensemble_f1:.4f}")
         
         # Сохраняем XGBoost модель отдельно
-        joblib.dump(xgb_model, "xgb_model_flat.pkl")
-        logging.info("XGBoost модель сохранена в 'xgb_model_flat.pkl'.")
+        xgb_save_path = os.path.join("/workspace/saved_models", "xgb_model_bearish.pkl")
+        joblib.dump(xgb_model, xgb_save_path)
+        logging.info(f"XGBoost-модель сохранена в '{xgb_save_path}'")
+
         
         # Формируем итоговый ансамбль в виде словаря
         ensemble_model = {
@@ -1194,12 +1197,15 @@ def build_flat_neural_network(data, model_filename):
     
     # Сохраняем финальную модель нейросети
     try:
-        model.save(model_filename)
-        logging.info(f"Модель сохранена в {model_filename}")
-        output_dir = os.path.join(os.getcwd(), "output", "flat_neural_network")
+        model_save_path = os.path.join("/workspace/saved_models", "flat_neural_network.h5")
+        os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+        model.save(model_save_path)
+        logging.info(f"Модель успешно сохранена в '{model_save_path}'")
+        output_dir = os.path.join("/workspace/output", "flat_neural_network")
         copy_output("Neural_Flat", output_dir)
     except Exception as e:
         logging.error(f"Ошибка при сохранении модели: {e}")
+
     
     # Возвращаем итоговый ансамбль и масштабировщик
     return {"ensemble_model": ensemble_model, "scaler": scaler}
@@ -1210,18 +1216,12 @@ if __name__ == "__main__":
     # Инициализация стратегии (TPU или CPU/GPU)
     strategy = initialize_strategy()
     
-    symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
+    symbols = ['BTCUSDC', 'ETHUSDC']
 
     # Периоды флэтового рынка
     
     flat_periods = [
-        {"start": "2019-02-01", "end": "2019-04-30"},
-        {"start": "2019-06-01", "end": "2019-08-31"},
-        {"start": "2020-01-01", "end": "2020-02-29"},
-        {"start": "2020-07-01", "end": "2020-08-31"},
-        {"start": "2020-09-01", "end": "2020-10-31"},
-        {"start": "2021-09-01", "end": "2021-10-31"},
-        {"start": "2023-04-01", "end": "2023-05-31"}
+        {"start": "2020-01-01", "end": "2020-02-01"},
     ]
 
 

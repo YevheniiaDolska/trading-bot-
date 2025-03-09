@@ -73,8 +73,9 @@ def initialize_strategy():
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Имя файла для сохранения модели
-nn_model_filename = os.path.join(os.getcwd(),'bullish_nn_model.h5')
-log_file = 'training_log_bullish_nn.txt'
+nn_model_filename = os.path.join("/workspace/saved_models", 'bullish_nn_model.h5')
+log_file = os.path.join("/workspace/logs", "training_log_bullish_nn.txt")
+
 
 def save_logs_to_file(log_message):
     with open(log_file, 'a') as log_f:
@@ -456,7 +457,8 @@ def load_all_data(symbols, start_date, end_date, interval='1m'):
         raise
 
 # Загрузка данных с Binance
-def get_historical_data(symbols, bullish_periods, interval="1m", save_path="binance_data_bullish.csv"):
+def get_historical_data(symbols, bullish_periods, interval="1m", save_path="/workspace/data/binance_data_bullish.csv"
+):
     """
     Скачивает исторические данные с Binance (архив) и сохраняет в один CSV-файл.
 
@@ -1189,7 +1191,7 @@ def build_bullish_neural_network(data):
     
     history = model.fit(
         train_dataset,
-        epochs=200,  # Увеличено число эпох для более тщательного обучения
+        epochs=1,  # 200
         validation_data=val_dataset,
         class_weight=class_weights,
         callbacks=[
@@ -1210,12 +1212,15 @@ def build_bullish_neural_network(data):
     
     
     try:
-        model.save("bullish_neural_network.h5")
-        logging.info("Модель успешно сохранена в 'bullish_neural_network.h5'")
-        output_dir = os.path.join(os.getcwd(), "output", "bullish_neural_network")
+        model_save_path = os.path.join("/workspace/saved_models", "bullish_neural_network.h5")
+        os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+        model.save(model_save_path)
+        logging.info(f"Модель успешно сохранена в '{model_save_path}'")
+        output_dir = os.path.join("/workspace/output", "bullish_neural_network")
         copy_output("Neural_Bullish", output_dir)
     except Exception as e:
         logging.error(f"Ошибка при сохранении модели: {e}")
+
     
     # Этап ансамблирования: извлечение эмбеддингов и обучение XGBoost
     logging.info("Этап ансамблирования: извлечение эмбеддингов и обучение XGBoost.")
@@ -1241,8 +1246,10 @@ def build_bullish_neural_network(data):
 
         
         # Сохраняем обученную XGBoost модель для дальнейшего использования
-        joblib.dump(xgb_model, "xgb_model_bullish.pkl")
-        logging.info("XGBoost-модель сохранена в 'xgb_model_bullish.pkl'")
+        xgb_save_path = os.path.join("/workspace/saved_models", "xgb_model_bullish.pkl")
+        joblib.dump(xgb_model, xgb_save_path)
+        logging.info(f"XGBoost-модель сохранена в '{xgb_save_path}'")
+
         
         # Формируем итоговый ансамбль в виде словаря
         ensemble_model = {
@@ -1267,17 +1274,10 @@ if __name__ == "__main__":
         # Инициализация стратегии (TPU или CPU/GPU)
         strategy = initialize_strategy()
 
-        symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
+        symbols = ['BTCUSDC', 'ETHUSDC']
         
         bullish_periods = [
-            {"start": "2017-06-01", "end": "2017-08-31"},
-            {"start": "2017-11-01", "end": "2018-01-16"},
-            {"start": "2020-11-01", "end": "2021-01-31"},
-            {"start": "2021-03-01", "end": "2021-04-30"},
-            {"start": "2021-08-15", "end": "2021-10-20"},
-            {"start": "2023-02-01", "end": "2023-03-31"},
-            {"start": "2023-03-15", "end": "2023-05-15"},
-            {"start": "2024-04-01", "end": "2024-06-30"}
+            {"start": "2020-11-01", "end": "2021-12-01"},
         ]
 
         # Загрузка данных для бычьих периодов
@@ -1320,8 +1320,9 @@ if __name__ == "__main__":
             raise ValueError("После очистки данные отсутствуют.")
 
         # Убедитесь, что пути к чекпоинтам определены
-        checkpoint_path_regular = "checkpoints/tpu_checkpoint_epoch_{epoch:02d}.h5"
-        checkpoint_path_best = "checkpoints/tpu_best_model.h5"
+        checkpoint_path_regular = os.path.join("/workspace/checkpoints", f"{network_name}_checkpoint_epoch_{{epoch:02d}}.h5")
+        checkpoint_path_best = os.path.join("/workspace/checkpoints", f"{network_name}_best_model.h5")
+
 
         # Обучение модели
         logging.info("Начало обучения модели для бычьего рынка")

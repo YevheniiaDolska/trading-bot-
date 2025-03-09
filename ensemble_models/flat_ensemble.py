@@ -41,7 +41,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("debug_log_flat_ensemble.log", encoding="utf-8"),
+        logging.FileHandler(os.path.join("/workspace/logs", "debug_log_flat_ensemble.log"), encoding="utf-8"),
         logging.StreamHandler(sys.stdout)  # Вывод в консоль с поддержкой юникода
     ]
 )
@@ -50,9 +50,11 @@ logging.basicConfig(
 # Имя файла для сохранения модели
 market_type = "flat"
 
-ensemble_model_filename = 'flat_stacked_ensemble_model.pkl'
+ensemble_model_filename = os.path.join("/workspace/saved_models", "flat_stacked_ensemble_model.pkl")
 
-checkpoint_base_dir = f"checkpoints/{market_type}"
+
+checkpoint_base_dir = os.path.join("/workspace/checkpoints", market_type)
+
 
 ensemble_checkpoint_path = os.path.join(checkpoint_base_dir, f"{market_type}_ensemble_checkpoint.pkl")
 
@@ -256,7 +258,8 @@ class CheckpointXGBoost(XGBClassifier):
         model_path = os.path.join(self.checkpoint_dir, "xgboost_checkpoint")
         
         # Проверяем существующий чекпоинт
-        final_checkpoint = f"{model_path}_final.joblib"
+        final_checkpoint = os.path.join("/workspace/saved_models", "flat_stacked_ensemble_model.pkl")
+
         if os.path.exists(final_checkpoint):
             try:
                 saved_model = joblib.load(final_checkpoint)
@@ -463,7 +466,19 @@ def debug_target_presence(data, stage_name):
     else:
         print("ВНИМАНИЕ: Колонка 'target' отсутствует!")
     print("=" * 50)
-    
+
+
+def save_logs_to_file(message):
+    """
+    Сохраняет логи в файл внутри директории /workspace/logs.
+    """
+    log_dir = "/workspace/logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "trading_logs.txt")
+    with open(log_file, "a") as f:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        f.write(f"{timestamp} - {message}\n")
+
 
 # Функция загрузки данных с использованием многопоточности
 def load_all_data(symbols, start_date, end_date, interval):
@@ -493,7 +508,7 @@ def load_all_data(symbols, start_date, end_date, interval):
 
 # Получение исторических данных
 
-def get_historical_data(symbols, flat_periods, interval="1m", save_path="binance_data_flat.csv"):
+def get_historical_data(symbols, flat_periods, interval="1m", save_path="/workspace/data/binance_data_flat.csv"):
     """
     Скачивает исторические данные с Binance (архив) и сохраняет в один CSV-файл.
 
@@ -625,7 +640,7 @@ def get_historical_data(symbols, flat_periods, interval="1m", save_path="binance
     return save_path
 
 
-def load_flat_data(symbols, flat_periods, interval="1m", save_path="binance_data_flat.csv"):
+def load_flat_data(symbols, flat_periods, interval="1m", save_path="/workspace/data/binance_data_flat.csv"):
     """
     Загружает данные для флэтового рынка для заданных символов и периодов.
     Если файл save_path уже существует, новые данные объединяются с уже сохранёнными.
@@ -985,7 +1000,7 @@ def get_checkpoint_path(model_name, market_type):
     Returns:
         str: Путь к директории чекпоинтов
     """
-    checkpoint_path = os.path.join("checkpoints", market_type, model_name)
+    checkpoint_path = os.path.join("/workspace/checkpoints", market_type, model_name)
     ensure_directory(checkpoint_path)
     return checkpoint_path
 
@@ -1317,7 +1332,7 @@ def train_ensemble_model(data, selected_features, model_filename='flat_stacked_e
     joblib.dump(save_data, ensemble_checkpoint_path)
     logging.info(f"[Ensemble] Ансамбль (3-класса, flat) сохранён в {ensemble_checkpoint_path}")
     
-    output_dir = os.path.join(os.getcwd(), "output", "flat_ensemble")
+    output_dir = os.path.join("/workspace/output", "flat_ensemble")
     copy_output("Ensemble_Flat", output_dir)
     
     return {"ensemble_model": ensemble_model, "scaler": scaler, "features": selected_features}
@@ -1329,20 +1344,15 @@ if __name__ == "__main__":
     strategy = initialize_strategy()
     
     # Инициализация клиента Binance (если требуется)
-    symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
+    symbols = ['BTCUSDC', 'ETHUSDC']
     
     flat_periods = [
-        {"start": "2019-02-01", "end": "2019-04-30"},
-        {"start": "2019-06-01", "end": "2019-08-31"},
-        {"start": "2020-01-01", "end": "2020-02-29"},
-        {"start": "2020-07-01", "end": "2020-08-31"},
-        {"start": "2020-09-01", "end": "2020-10-31"},
-        {"start": "2021-09-01", "end": "2021-10-31"},
-        {"start": "2023-04-01", "end": "2023-05-31"}
+        {"start": "2020-01-01", "end": "2020-02-01"},
+        
     ]
     
     # Загрузка данных для флэта (функция load_flat_data должна возвращать словарь DataFrame, как в бычьем варианте)
-    data_dict = load_flat_data(symbols, flat_periods, interval="1m")
+    data_dict = load_flat_data(symbols, flat_periods, interval="1m", save_path="/workspace/data/binance_data_flat.csv")
     
     # Проверяем, что словарь не пустой
     if not data_dict:

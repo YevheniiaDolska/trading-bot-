@@ -45,7 +45,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("debug_log_bullish_ensemble.log", encoding="utf-8"),
+        logging.FileHandler(os.path.join("/workspace/logs", "debug_log_bearish_ensemble.log"), encoding="utf-8"),
         logging.StreamHandler(sys.stdout)  # Вывод в консоль с поддержкой юникода
     ]
 )
@@ -53,9 +53,9 @@ logging.basicConfig(
 # Имя файла для сохранения модели
 market_type = "bearish"
 
-ensemble_model_filename = 'models/bearish_stacked_ensemble_model.pkl'
+ensemble_model_filename = os.path.join("/workspace/saved_models", "bearish_stacked_ensemble_model.pkl")
 
-checkpoint_base_dir = f"checkpoints/{market_type}"
+checkpoint_base_dir = os.path.join("/workspace/checkpoints", market_type)
 
 ensemble_checkpoint_path = os.path.join(checkpoint_base_dir, f"{market_type}_ensemble_checkpoint.pkl")
 
@@ -98,18 +98,22 @@ def _on_rm_error(func, path, exc_info):
 
 # Функция для формирования пути к чекпоинтам
 def get_checkpoint_path(model_name, market_type):
-    cp_path = os.path.join("checkpoints", market_type, model_name)
+    cp_path = os.path.join("/workspace/checkpoints", market_type, model_name)
     ensure_directory(cp_path)
     return cp_path
         
 
 def save_logs_to_file(message):
     """
-    Сохраняет логи в файл.
+    Сохраняет логи в файл внутри директории /workspace/logs.
     """
-    with open("trading_logs.txt", "a") as f:
+    log_dir = "/workspace/logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join("/workspace/logs", "training_log_bearish_nn.txt")
+    with open(log_file, "a") as f:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         f.write(f"{timestamp} - {message}\n")
+
         
         
 def calculate_cross_coin_features(data_dict):
@@ -343,7 +347,8 @@ class CheckpointXGBoost(XGBClassifier):
     def fit(self, X, y, **kwargs):
         logging.info("[XGBoost] Начало обучения с чекпоинтами")
         model_path = os.path.join(self._checkpoint_dir, "xgboost_checkpoint")
-        final_checkpoint = f"{model_path}_final.joblib"
+        final_checkpoint = os.path.join("/workspace/saved_models", "bearish_stacked_ensemble_model.pkl")
+
         
         # Если уже есть сохранённый чекпоинт, пытаемся его загрузить
         if os.path.exists(final_checkpoint):
@@ -578,7 +583,7 @@ def load_ensemble_checkpoint(checkpoint_path):
 
 
 # Получение исторических данных
-def get_historical_data(symbols, bearish_periods, interval="1m", save_path="binance_data_bearish.csv"):
+def get_historical_data(symbols, bearish_periods, interval="1m", save_path="/workspace/data/binance_data_bearish.csv"):
     base_url_monthly = "https://data.binance.vision/data/spot/monthly/klines"
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     
@@ -698,7 +703,7 @@ def get_historical_data(symbols, bearish_periods, interval="1m", save_path="bina
     return save_path
 
 
-def load_bearish_data(symbols, bearish_periods, interval="1m", save_path="binance_data_bearish.csv"):
+def load_bearish_data(symbols, bearish_periods, interval="1m", save_path="/workspace/data/binance_data_bearish.csv"):
     if os.path.exists(save_path):
         try:
             existing_data = pd.read_csv(save_path, index_col=0, parse_dates=True, on_bad_lines='skip')
@@ -750,7 +755,7 @@ def load_bearish_data(symbols, bearish_periods, interval="1m", save_path="binanc
     return all_data
 
 
-def load_bearish_data(symbols, bearish_periods, interval="1m", save_path="binance_data_bearish.csv"):
+def load_bearish_data(symbols, bearish_periods, interval="1m", save_path="/workspace/data/binance_data_bearish.csv"):
     if os.path.exists(save_path):
         try:
             existing_data = pd.read_csv(save_path, index_col=0, parse_dates=True, on_bad_lines='skip')
@@ -1500,7 +1505,7 @@ def train_ensemble_model(data, selected_features, model_filename='models/bearish
     joblib.dump(save_data, model_filename)
     logging.info(f"[Ensemble] Ансамбль сохранён в {model_filename}")
     
-    output_dir = os.path.join(os.getcwd(), "output", "bearish_ensemble")
+    output_dir = os.path.join("/workspace/output", "bearish_ensemble")
     copy_output("Ensemble_Bearish", output_dir)
     
     return {"ensemble_model": ensemble_model, "scaler": scaler, "features": selected_features}
@@ -1512,19 +1517,15 @@ if __name__ == "__main__":
 
     strategy = initialize_strategy()
     
-    symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
+    symbols = ['BTCUSDC', 'ETHUSDC']
     
     bearish_periods = [
-            {"start": "2018-01-17", "end": "2018-03-31"},
-            {"start": "2018-09-01", "end": "2018-12-31"},
-            {"start": "2021-05-12", "end": "2021-08-31"},
-            {"start": "2022-05-01", "end": "2022-07-31"},
-            {"start": "2022-09-01", "end": "2022-12-15"},
-            {"start": "2022-12-16", "end": "2023-01-31"}
+            
+            {"start": "2021-05-30", "end": "2021-06-31"},
         ]
     
     try:
-        data_dict = load_bearish_data(symbols, bearish_periods, interval="1m")
+        data_dict = load_bearish_data(symbols, bearish_periods, interval="1m", save_path="/workspace/data/binance_data_bearish.csv")
         logging.info("Данные успешно загружены")
     except Exception as e:
         logging.error(f"Ошибка при обработке данных: {e}")
