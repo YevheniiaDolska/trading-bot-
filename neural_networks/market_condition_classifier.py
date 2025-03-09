@@ -346,14 +346,14 @@ class MarketClassifier:
             self.previous_market_type = 'flat'  # Инициализация значением flat
 
         # Базовые сигналы с подробным логированием
-        adx = data['adx'].iloc[-1]
-        rsi = data['rsi'].iloc[-1]
-        macd_hist = data['macd_hist'].iloc[-1]
-        willr = data['willr'].iloc[-1]
+        adx = data['adx'].shift(1).iloc[-1]
+        rsi = data['rsi'].shift(1).iloc[-1]
+        macd_hist = data['macd_hist'].shift(1).iloc[-1]
+        willr = data['willr'].shift(1).iloc[-1]
         volume_ratio = data['volume_ratio'].iloc[-1]
         price = data['close'].iloc[-1]
-        support = data['support_level'].iloc[-1]
-        resistance = data['resistance_level'].iloc[-1]
+        support = data['support_level'].shift(1).iloc[-1]
+        resistance = data['resistance_level'].shift(1).iloc[-1]
         
         # Расчет расстояния до уровней в процентах
         distance_to_support = ((price - support) / price) * 100
@@ -744,7 +744,7 @@ class MarketClassifier:
         X_scaled = scaler.transform(X)
 
         # Кросс-валидация для оценки модели
-        skf = StratifiedKFold(n_splits=2, shuffle=True, random_state=42)
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         fold_scores = []
         f1_scores = []
 
@@ -853,14 +853,20 @@ class MarketClassifier:
 
             # Сохранение модели только при высоком качестве
             if f1 >= 0.80:
-                final_model.save(model_path)
-                joblib.dump(xgb_model, "xgb_model.pkl")  # ✅ Сохраняем XGBoost отдельно
-                logging.info(f"Финальная модель LSTM-GRU сохранена в {model_path}")
-                logging.info(f"XGBoost-модель сохранена в bullish_xgb_model.pkl")
-                
-                output_dir = os.path.join(os.getcwd(), "output", "market_condition_classifier")
-                copy_output("Market_Classifier", output_dir)
+                # Папка, где будут лежать модели (внутри контейнера RunPod)
+                saved_models_dir = "/workspace/saved_models/Market_Classifier"
+                os.makedirs(saved_models_dir, exist_ok=True)
 
+                # Путь для LSTM-GRU модели
+                model_path = os.path.join(saved_models_dir, "final_model.h5")
+                final_model.save(model_path)
+                
+                # Путь для XGBoost-модели
+                xgb_path = os.path.join(saved_models_dir, "bullish_xgb_model.pkl")
+                joblib.dump(xgb_model, xgb_path)
+
+                logging.info(f"Финальная модель LSTM-GRU сохранена в {model_path}")
+                logging.info(f"XGBoost-модель сохранена в {xgb_path}")
                 return final_model
             else:
                 logging.warning("Финальное качество модели ниже порогового (80% F1-score). Модель не сохранена.")
@@ -873,14 +879,15 @@ if __name__ == "__main__":
     strategy = initialize_strategy()
     
     
-    symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
+    symbols = ['BTCUSDC', 'ETHUSDC']
     
-    start_date = datetime(2017, 7, 1)
-    end_date = datetime(2024, 9, 30)
+    start_date = datetime(2019, 7, 1)
+    end_date = datetime(2024, 8, 1)
     
-    data_path = "labeled_market_data.csv"  # Путь к размеченным данным
-    model_path = "market_condition_classifier.h5"  # Путь для сохранения модели
-    scaler_path = "scaler.pkl"  # Путь для сохранения масштабировщика
+    data_path = os.path.join("/workspace/data", "labeled_market_data.csv")
+    model_path = os.path.join("/workspace/saved_models", "market_condition_classifier.h5")
+    scaler_path = os.path.join("/workspace/saved_models", "scaler.pkl")
+
 
     # Создание экземпляра классификатора
     classifier = MarketClassifier()
@@ -912,4 +919,5 @@ if __name__ == "__main__":
     except Exception as e:
         logging.error(f"Ошибка в процессе обучения: {e}")
         exit(1)
+
 
