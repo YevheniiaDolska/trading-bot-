@@ -699,7 +699,7 @@ class MarketClassifier:
         lstm_gru_model = build_lstm_gru_model((X_train.shape[1], X_train.shape[2]))
 
         # Обучаем LSTM-GRU
-        lstm_gru_model.fit(X_train, y_train, epochs=100, batch_size=64, verbose=1)#epochs=100
+        lstm_gru_model.fit(X_train, y_train, epochs=1, batch_size=64, verbose=1)#epochs=100
 
         # Извлекаем эмбеддинги из последнего слоя перед softmax
         feature_extractor = tf.keras.models.Model(
@@ -766,7 +766,7 @@ class MarketClassifier:
 
                 model_fold.fit(
                     X_train_fold, y_train_fold,
-                    epochs=50,#50
+                    epochs=1,#50
                     batch_size=64,
                     validation_data=(X_val_fold, y_val_fold),
                     verbose=1
@@ -815,7 +815,7 @@ class MarketClassifier:
             history = final_model.fit(
                 X_train, y_train,
                 validation_data=(X_test, y_test),
-                epochs=200,#200
+                epochs=1,#200
                 batch_size=64,
                 class_weight=class_weights,
                 callbacks=callbacks
