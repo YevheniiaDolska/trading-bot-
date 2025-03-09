@@ -852,6 +852,7 @@ class MarketClassifier:
             """)
 
             # Сохранение модели только при высоком качестве
+            '''
             if f1 >= 0.80:
                 # Папка, где будут лежать модели (внутри контейнера RunPod)
                 saved_models_dir = "/workspace/saved_models/Market_Classifier"
@@ -862,7 +863,7 @@ class MarketClassifier:
                 final_model.save(model_path)
                 
                 # Путь для XGBoost-модели
-                xgb_path = os.path.join(saved_models_dir, "bullish_xgb_model.pkl")
+                xgb_path = os.path.join(saved_models_dir, "classifier_xgb_model.pkl")
                 joblib.dump(xgb_model, xgb_path)
 
                 logging.info(f"Финальная модель LSTM-GRU сохранена в {model_path}")
@@ -871,6 +872,22 @@ class MarketClassifier:
             else:
                 logging.warning("Финальное качество модели ниже порогового (80% F1-score). Модель не сохранена.")
                 return None
+                '''
+            
+            # Всегда сохраняем
+            saved_models_dir = "/workspace/saved_models/Market_Classifier"
+            os.makedirs(saved_models_dir, exist_ok=True)
+
+            model_path = os.path.join(saved_models_dir, "final_model.h5")
+            final_model.save(model_path)
+
+            xgb_path = os.path.join(saved_models_dir, "classifier_xgb_model.pkl")
+            joblib.dump(xgb_model, xgb_path)
+
+            logging.info(f"Финальная модель LSTM-GRU сохранена в {model_path}")
+            logging.info(f"XGBoost-модель сохранена в {xgb_path}")
+            return final_model
+
 
 
 
