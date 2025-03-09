@@ -885,8 +885,14 @@ if __name__ == "__main__":
     end_date = datetime(2019, 8, 1)
     
     data_path = os.path.join("/workspace/data", "labeled_market_data.csv")
+    os.makedirs(os.path.dirname(data_path), exist_ok=True)
+
     model_path = os.path.join("/workspace/saved_models", "market_condition_classifier.h5")
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+
     scaler_path = os.path.join("/workspace/saved_models", "scaler.pkl")
+    os.makedirs(os.path.dirname(scaler_path), exist_ok=True)
+
 
 
     # Создание экземпляра классификатора
