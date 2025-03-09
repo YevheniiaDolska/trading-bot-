@@ -1177,7 +1177,8 @@ def build_flat_neural_network(data, model_filename):
         logging.info(f"Этап ансамблирования: F1-score ансамбля на валидации = {ensemble_f1:.4f}")
         
         # Сохраняем XGBoost модель отдельно
-        xgb_save_path = os.path.join("/workspace/saved_models", "xgb_model_bearish.pkl")
+        xgb_save_path = os.path.join("/workspace/saved_models", "xgb_model_flat.pkl")
+        os.makedirs(os.path.dirname(xgb_save_path), exist_ok=True)
         joblib.dump(xgb_model, xgb_save_path)
         logging.info(f"XGBoost-модель сохранена в '{xgb_save_path}'")
 
