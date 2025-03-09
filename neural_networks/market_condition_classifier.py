@@ -882,7 +882,7 @@ if __name__ == "__main__":
     symbols = ['BTCUSDC', 'ETHUSDC']
     
     start_date = datetime(2019, 7, 1)
-    end_date = datetime(2024, 8, 1)
+    end_date = datetime(2019, 8, 1)
     
     data_path = os.path.join("/workspace/data", "labeled_market_data.csv")
     model_path = os.path.join("/workspace/saved_models", "market_condition_classifier.h5")
