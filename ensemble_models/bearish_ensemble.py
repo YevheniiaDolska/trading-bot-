@@ -252,7 +252,7 @@ def preprocess_market_data(data_dict):
 
 # ------------------ CheckpointGradientBoosting ------------------
 class CheckpointGradientBoosting(GradientBoostingClassifier):
-    def __init__(self, n_estimators=100, learning_rate=0.1, max_depth=3,
+    def __init__(self, n_estimators=1, learning_rate=0.1, max_depth=3, #n_estimators=100
                  random_state=None, subsample=1.0, min_samples_split=2,
                  min_samples_leaf=1, **kwargs):
         # Извлекаем _checkpoint_dir, если передан, иначе создаём новый путь
@@ -321,7 +321,7 @@ class CheckpointGradientBoosting(GradientBoostingClassifier):
         return self
 
 class CheckpointXGBoost(XGBClassifier):
-    def __init__(self, n_estimators=100, max_depth=3, learning_rate=0.1,
+    def __init__(self, n_estimators=1, max_depth=3, learning_rate=0.1, #n_estimators=100
                  min_child_weight=1, subsample=1.0, colsample_bytree=1.0,
                  random_state=None, objective=None, **kwargs):
         super().__init__(
@@ -385,7 +385,7 @@ class CheckpointXGBoost(XGBClassifier):
 
 
 class CheckpointLightGBM(LGBMClassifier):
-    def __init__(self, n_estimators=100, num_leaves=31, learning_rate=0.1,
+    def __init__(self, n_estimators=1, num_leaves=31, learning_rate=0.1, #n_estimators=100
                  min_data_in_leaf=20, max_depth=-1, random_state=None, **kwargs):
         self._checkpoint_dir = kwargs.pop('_checkpoint_dir', get_checkpoint_path("lightgbm", market_type))
         super().__init__(n_estimators=n_estimators, num_leaves=num_leaves,
@@ -435,7 +435,7 @@ class CheckpointLightGBM(LGBMClassifier):
 SKIP_CHECKPOINT = False
 
 class CheckpointCatBoost(CatBoostClassifier):
-    def __init__(self, iterations=1000, depth=6, learning_rate=0.1,
+    def __init__(self, iterations=1, depth=6, learning_rate=0.1, #iterations=1000
                  random_state=None, **kwargs):
         # Если параметр 'save_snapshot' передан, удаляем его, чтобы избежать конфликтов
         if 'save_snapshot' in kwargs:
@@ -496,7 +496,7 @@ class CheckpointCatBoost(CatBoostClassifier):
 
 
 class CheckpointRandomForest(RandomForestClassifier):
-    def __init__(self, n_estimators=100, max_depth=None,
+    def __init__(self, n_estimators=1, max_depth=None, #n_estimators=100
                  min_samples_split=2, min_samples_leaf=1, random_state=None, **kwargs):
         self._checkpoint_dir = kwargs.pop('_checkpoint_dir', get_checkpoint_path("random_forest", market_type))
         super().__init__(n_estimators=n_estimators, max_depth=max_depth,
@@ -1402,33 +1402,33 @@ def train_ensemble_model(data, selected_features, model_filename='models/bearish
     base_learners = []
 
     # 10. Инициализация базовых моделей с классами чекпоинтов
-    rf_model = CheckpointRandomForest(n_estimators=200, max_depth=6, min_samples_leaf=5)
-    gb_model = CheckpointGradientBoosting(n_estimators=150, max_depth=5, learning_rate=0.03, subsample=0.8)
-    xgb_model = CheckpointXGBoost(n_estimators=150, max_depth=5, subsample=0.8,
+    rf_model = CheckpointRandomForest(n_estimators=1, max_depth=6, min_samples_leaf=5) #n_estimators=200
+    gb_model = CheckpointGradientBoosting(n_estimators=1, max_depth=5, learning_rate=0.03, subsample=0.8) #n_estimators=150
+    xgb_model = CheckpointXGBoost(n_estimators=1, max_depth=5, subsample=0.8, #n_estimators=150
                                   min_child_weight=3, learning_rate=0.03,
                                   objective='multi:softprob', num_class=3)
-    lgbm_model = CheckpointLightGBM(n_estimators=150, num_leaves=32, learning_rate=0.03,
+    lgbm_model = CheckpointLightGBM(n_estimators=1, num_leaves=32, learning_rate=0.03, #n_estimators=150
                                     min_data_in_leaf=5, random_state=42,
                                     objective="multiclass", num_class=3)
-    catboost_model = CheckpointCatBoost(iterations=300, depth=6, learning_rate=0.03,
+    catboost_model = CheckpointCatBoost(iterations=1, depth=6, learning_rate=0.03, #iterations=300
                                          min_data_in_leaf=5, random_state=42,
                                          loss_function='MultiClass')
     for name, model in [('rf', rf_model), ('gb', gb_model), ('xgb', xgb_model),
                         ('lgbm', lgbm_model), ('catboost', catboost_model)]:
         if perform_grid_search:
             if name == 'rf':
-                param_grid = {'n_estimators': [150, 200], 'max_depth': [4, 6, 8], 'min_samples_leaf': [5, 8]}
+                param_grid = {'n_estimators': [1, 2], 'max_depth': [4, 6, 8], 'min_samples_leaf': [5, 8]} #'n_estimators': [150, 200],
             elif name == 'gb':
-                param_grid = {'n_estimators': [150, 200], 'max_depth': [4, 5, 6],
+                param_grid = {'n_estimators': [1, 2], 'max_depth': [4, 5, 6], #'n_estimators': [150, 200],
                               'learning_rate': [0.03, 0.05], 'subsample': [0.8, 0.9]}
             elif name == 'xgb':
-                param_grid = {'n_estimators': [150, 200], 'max_depth': [4, 5, 6],
+                param_grid = {'n_estimators': [1, 2], 'max_depth': [4, 5, 6], #'n_estimators': [150, 200],
                               'learning_rate': [0.03, 0.05], 'min_child_weight': [3, 5]}
             elif name == 'lgbm':
-                param_grid = {'n_estimators': [150, 200], 'num_leaves': [32, 40],
+                param_grid = {'n_estimators': [1, 2], 'num_leaves': [32, 40], #'n_estimators': [150, 200],
                               'learning_rate': [0.03, 0.05], 'min_data_in_leaf': [5, 8]}
             elif name == 'catboost':
-                param_grid = {'iterations': [300, 350], 'depth': [5, 6],
+                param_grid = {'iterations': [1, 2], 'depth': [5, 6], #'iterations': [300, 350],
                               'learning_rate': [0.03, 0.05]}
             grid_search = GridSearchCV(model, param_grid, cv=2, scoring='f1_weighted', n_jobs=1)
             grid_search.fit(scaler.transform(X_sample), y_sample)
@@ -1457,18 +1457,19 @@ def train_ensemble_model(data, selected_features, model_filename='models/bearish
             logging.info(f"[{name}] Feature importances: {model.feature_importances_}")
     
     # 12. Обучение мета-модели через GridSearchCV
+    meta_model = LogisticRegressionCV(
+        Cs=[0.01, 0.08, 0.1],
+        penalty='l2',
+        cv=2,
+        max_iter=30000,
+        tol=1e-8,
+        solver='saga',
+        multi_class='multinomial',
+        n_iter_no_change=20,
+        random_state=42
+    )
 
-    meta_model = LogisticRegression(C=0.08, max_iter=30000, tol=1e-8, solver='saga',
-                                    random_state=42, multi_class='multinomial')
-    meta_param_grid = {'C': [0.01, 0.08, 0.1],
-                       'penalty': ['l1', 'l2'],
-                       'solver': ['saga'],
-                       'max_iter': [30000],
-                       'tol': [1e-8]}
-    meta_grid_search = GridSearchCV(meta_model, meta_param_grid, cv=2, scoring='f1_weighted', n_jobs=1)
-    meta_grid_search.fit(X_resampled_scaled, y_resampled2)
-    meta_model = meta_grid_search.best_estimator_
-    logging.info(f"[GridSearch] Лучшие параметры для мета-модели: {meta_grid_search.best_params_}")
+    meta_model.fit(X_resampled_scaled, y_resampled2)
     
     # 13. Удаление старых чекпоинтов базовых моделей
     for name, _ in base_learners:

@@ -180,7 +180,7 @@ def preprocess_market_data(data_dict):
 
 # GradientBoosting: сохранение после каждой итерации
 class CheckpointGradientBoosting(GradientBoostingClassifier):
-    def __init__(self, n_estimators=100, learning_rate=0.1, max_depth=3, random_state=None, 
+    def __init__(self, n_estimators=1, learning_rate=0.1, max_depth=3, random_state=None, #n_estimators=100
                  subsample=1.0, min_samples_split=2, min_samples_leaf=1):
         super().__init__(n_estimators=n_estimators, learning_rate=learning_rate, max_depth=max_depth,
                          random_state=random_state, subsample=subsample, min_samples_split=min_samples_split,
@@ -237,7 +237,7 @@ class CheckpointGradientBoosting(GradientBoostingClassifier):
 
 # XGBoost: сохранение каждые 3 итерации
 class CheckpointXGBoost(XGBClassifier):
-    def __init__(self, n_estimators=100, max_depth=3, learning_rate=0.1,
+    def __init__(self, n_estimators=1, max_depth=3, learning_rate=0.1, #n_estimators=100
                  min_child_weight=1, subsample=1.0, colsample_bytree=1.0,
                  random_state=None, objective=None, **kwargs):
         super().__init__(
@@ -282,7 +282,7 @@ class CheckpointXGBoost(XGBClassifier):
 
 # LightGBM: сохранение каждые 3 итерации
 class CheckpointLightGBM(LGBMClassifier):
-    def __init__(self, n_estimators=100, num_leaves=31, learning_rate=0.1,
+    def __init__(self, n_estimators=1, num_leaves=31, learning_rate=0.1, #n_estimators=100
                  min_data_in_leaf=20, max_depth=-1, random_state=None, **kwargs):
         super().__init__(
             n_estimators=n_estimators,
@@ -330,7 +330,7 @@ class CheckpointLightGBM(LGBMClassifier):
     
 # CatBoost: сохранение каждые 3 итерации
 class CheckpointCatBoost(CatBoostClassifier):
-    def __init__(self, iterations=1000, depth=6, learning_rate=0.1,
+    def __init__(self, iterations=1, depth=6, learning_rate=0.1, #iterations=1000
                  random_state=None, **kwargs):
         # Удаляем save_snapshot из kwargs если он там есть
         if 'save_snapshot' in kwargs:
@@ -377,7 +377,7 @@ class CheckpointCatBoost(CatBoostClassifier):
     
 # RandomForest: сохранение после каждого дерева
 class CheckpointRandomForest(RandomForestClassifier):
-    def __init__(self, n_estimators=100, max_depth=None,
+    def __init__(self, n_estimators=1, max_depth=None, #n_estimators=100
                  min_samples_split=2, min_samples_leaf=1, random_state=None):
         super().__init__(n_estimators=n_estimators, max_depth=max_depth, 
                          min_samples_split=min_samples_split,
@@ -1053,7 +1053,12 @@ def check_feature_quality(X, y):
 # Обучение модели
 def train_model(model, X_train, y_train, name):
     logging.info(f"Начало обучения модели {name}")
-    model.fit(X_train, y_train)
+    model.fit(
+        X_train, y_train,
+        eval_set=[(X_test, y_test)],
+        early_stopping_rounds=10,
+        verbose=True
+    )
     return model
 
 def train_models_for_intervals(data, intervals, selected_features=None):
@@ -1080,8 +1085,13 @@ def train_models_for_intervals(data, intervals, selected_features=None):
         y = prepared_data['target']
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        model = RandomForestClassifier(n_estimators=200, max_depth=6, random_state=42)
-        model.fit(X_train, y_train)
+        model = RandomForestClassifier(n_estimators=1, max_depth=6, random_state=42) #n_estimators=200
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_test, y_test)],
+            early_stopping_rounds=10,
+            verbose=True
+        )
         models[interval] = (model, selected_features)
     return models
 
@@ -1201,56 +1211,56 @@ def train_ensemble_model(data, selected_features, model_filename='flat_stacked_e
     
     # 11) Инициализация базовых моделей под 3 класса (адаптировано для флэта)
     rf_model = CheckpointRandomForest(
-        n_estimators=150,
-        max_depth=6,
-        min_samples_leaf=3
+        n_estimators=1, #n_estimators=100
+        max_depth=4,
+        min_samples_leaf=5
     )
-    
+
     gb_model = CheckpointGradientBoosting(
-        n_estimators=150,
-        max_depth=4,
-        learning_rate=0.08,
-        subsample=0.85
+        n_estimators=1, #n_estimators=100
+        max_depth=3,
+        learning_rate=0.1,
+        subsample=0.8
     )
-    
+
     xgb_model = CheckpointXGBoost(
-        n_estimators=150,
-        max_depth=4,
-        subsample=0.85,
-        min_child_weight=4,
-        learning_rate=0.008,
-        objective='multi:softprob',
-        num_class=3
+        n_estimators=1, #n_estimators=100
+        max_depth=3,
+        subsample=0.8,
+        min_child_weight=5,
+        learning_rate=0.01,
+        objective='multi:softprob',  # многоклассовый XGBoost
+        num_class=3                  # 3 класса
     )
-    
+
     lgbm_model = CheckpointLightGBM(
-        n_estimators=150,
-        num_leaves=20,
-        learning_rate=0.08,
-        min_data_in_leaf=4,
+        n_estimators=1, #n_estimators=100
+        num_leaves=16,
+        learning_rate=0.1,
+        min_data_in_leaf=5,
         random_state=42,
         **{"objective": "multiclass", "num_class": 3}
     )
-    
+
     catboost_model = CheckpointCatBoost(
-        iterations=250,
+        iterations=1, #iterations=200
         depth=4,
-        learning_rate=0.08,
-        min_data_in_leaf=4,
+        learning_rate=0.1,
+        min_data_in_leaf=5,
         save_snapshot=False,
         random_state=42,
         loss_function='MultiClass'
     )
-    
-    # Здесь можно задать оптимизированные веса для мета-модели, если требуется
+
+    # Оптимизированные веса для базовых моделей
     meta_weights = {
-        'xgb': 0.35,
-        'lgbm': 0.35,
-        'catboost': 0.15,
+        'xgb': 0.3,
+        'lgbm': 0.3,
+        'catboost': 0.2,
         'gb': 0.1,
-        'rf': 0.05
+        'rf': 0.1
     }
-    
+
     base_learners = [
         ('rf', rf_model),
         ('gb', gb_model),
@@ -1258,38 +1268,52 @@ def train_ensemble_model(data, selected_features, model_filename='flat_stacked_e
         ('lgbm', lgbm_model),
         ('catboost', catboost_model)
     ]
-    
-    # 12) Еще раз масштабируем итоговый X_resampled
+
+    # 12) Масштабирование итогового X_resampled и тестовых данных
     X_resampled_scaled = scaler.fit_transform(X_resampled)
     X_test_scaled = scaler.transform(X_test)
-    
-    # 13) Обучаем каждую базовую модель (3 класса)
+
+    # 13) Обучение каждой базовой модели с использованием early stopping для тех, которые его поддерживают
     for name, model in base_learners:
         checkpoint_path = get_checkpoint_path(name, market_type)
         final_checkpoint = os.path.join(checkpoint_path, f"{name}_final.joblib")
-        logging.info(f"[Ensemble] Обучение модели {name} (flat)")
-        model.fit(X_resampled_scaled, y_resampled)
+        logging.info(f"[Ensemble] Обучение модели {name}")
+        if name in ['xgb', 'lgbm', 'catboost']:
+            # Передаем eval_set и early_stopping_rounds для моделей, поддерживающих раннюю остановку
+            model.fit(X_resampled_scaled, y_resampled, eval_set=[(X_test_scaled, y_test)], early_stopping_rounds=20)
+        else:
+            model.fit(X_resampled_scaled, y_resampled)
         joblib.dump(model, final_checkpoint)
         logging.info(f"[Ensemble] Модель {name} сохранена в {final_checkpoint}")
-    
-    # 14) Обучение стекинг-ансамбля
-    logging.info("[Ensemble] Обучение стекинг-ансамбля (3-класса, flat)")
+
+    # 14) Обучение мета-модели через GridSearchCV (блок без изменений)
     meta_model_candidate = XGBClassifier(random_state=42)
     param_grid = {
-        'n_estimators': [50, 100, 150],
+        'n_estimators': [1, 2, 3], #'n_estimators': [50, 100, 150],
         'max_depth': [3, 4, 5],
-        'learning_rate': [0.008, 0.05, 0.08],
-        'subsample': [0.85, 1.0],
-        'colsample_bytree': [0.85, 1.0]
+        'learning_rate': [0.01, 0.05, 0.1],
+        'subsample': [0.8, 1.0],
+        'colsample_bytree': [0.8, 1.0]
     }
-    grid_search = GridSearchCV(estimator=meta_model_candidate,
-                               param_grid=param_grid,
-                               cv=3,
-                               scoring='f1_macro',
-                               n_jobs=-1)
-    grid_search.fit(X_resampled_scaled, y_resampled)
+
+    # Передаем дополнительные параметры в метод fit через fit_params:
+    grid_search = GridSearchCV(
+        estimator=meta_model_candidate,
+        param_grid=param_grid,
+        cv=3,
+        scoring='f1_macro',
+        n_jobs=-1
+    )
+
+    grid_search.fit(
+        X_resampled_scaled,
+        y_resampled,
+        eval_set=[(X_test_scaled, y_test)],
+        early_stopping_rounds=20
+    )
+
     meta_model = grid_search.best_estimator_
-    logging.info(f"Лучшие гиперпараметры мета-модели (flat): {grid_search.best_params_}")
+    logging.info(f"Лучшие гиперпараметры мета-модели: {grid_search.best_params_}")
     # ------------------------------------------------------------------
     
     # Удаляем старые чекпоинты для базовых моделей

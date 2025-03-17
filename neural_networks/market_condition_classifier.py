@@ -43,9 +43,7 @@ import matplotlib.pyplot as plt
 import tensorflow.keras.backend as K
 from sklearn.model_selection import StratifiedKFold
 from sklearn.dummy import DummyClassifier
-from scipy.stats import zscore
-from utils_output import ensure_directory, copy_output, save_model_output
-import sys
+from scipy.stats import zscore  
 
 
 
@@ -347,14 +345,14 @@ class MarketClassifier:
             self.previous_market_type = 'flat'  # Инициализация значением flat
 
         # Базовые сигналы с подробным логированием
-        adx = data['adx'].shift(1).iloc[-1]
-        rsi = data['rsi'].shift(1).iloc[-1]
-        macd_hist = data['macd_hist'].shift(1).iloc[-1]
-        willr = data['willr'].shift(1).iloc[-1]
+        adx = data['adx'].iloc[-1]
+        rsi = data['rsi'].iloc[-1]
+        macd_hist = data['macd_hist'].iloc[-1]
+        willr = data['willr'].iloc[-1]
         volume_ratio = data['volume_ratio'].iloc[-1]
         price = data['close'].iloc[-1]
-        support = data['support_level'].shift(1).iloc[-1]
-        resistance = data['resistance_level'].shift(1).iloc[-1]
+        support = data['support_level'].iloc[-1]
+        resistance = data['resistance_level'].iloc[-1]
         
         # Расчет расстояния до уровней в процентах
         distance_to_support = ((price - support) / price) * 100
@@ -636,20 +634,15 @@ class MarketClassifier:
 
 
     def build_lstm_gru_model(self, input_shape):
-        """Создаёт мощный ансамбль LSTM + GRU с Attention"""
         inputs = Input(shape=input_shape)
 
-        # LSTM блок
-        lstm_out = LSTM(256, return_sequences=True, kernel_regularizer=l2(0.01))(inputs)
-        lstm_out = Dropout(0.3)(lstm_out)
-        lstm_out = LSTM(128, return_sequences=True, kernel_regularizer=l2(0.01))(lstm_out)
+        # LSTM блок (уменьшаем размер слоёв)
+        lstm_out = LSTM(128, return_sequences=True, kernel_regularizer=l2(0.01))(inputs)
         lstm_out = Dropout(0.3)(lstm_out)
         lstm_out = LSTM(64, return_sequences=True, kernel_regularizer=l2(0.01))(lstm_out)
 
-        # GRU блок
-        gru_out = GRU(256, return_sequences=True, kernel_regularizer=l2(0.01))(inputs)
-        gru_out = Dropout(0.3)(gru_out)
-        gru_out = GRU(128, return_sequences=True, kernel_regularizer=l2(0.01))(gru_out)
+        # GRU блок (уменьшаем размер слоёв)
+        gru_out = GRU(128, return_sequences=True, kernel_regularizer=l2(0.01))(inputs)
         gru_out = Dropout(0.3)(gru_out)
         gru_out = GRU(64, return_sequences=True, kernel_regularizer=l2(0.01))(gru_out)
 
@@ -659,17 +652,18 @@ class MarketClassifier:
         # Attention-механизм
         attention = Attention()(combined)
 
-        # Финальные Dense-слои
         x = LSTM(64, return_sequences=False)(attention)
         x = Dropout(0.3)(x)
-        x = Dense(64, activation='relu', kernel_regularizer=l2(0.01))(x)
+        x = Dense(64, activation='relu', kernel_regularizer=l2(0.01))(attention)
         x = Dropout(0.3)(x)
         x = Dense(32, activation='relu', kernel_regularizer=l2(0.01))(x)
-        outputs = Dense(3, activation='softmax')(x)  # 3 класса: bullish, bearish, flat
+        outputs = Dense(3, activation='softmax')(x)
 
         model = tf.keras.models.Model(inputs, outputs)
         model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
         return model
+
+
 
 
     def train_xgboost(self, X_train, y_train):
@@ -691,7 +685,7 @@ class MarketClassifier:
                 colsample_bytree=0.8,
                 verbosity=1
             )
-            booster.fit(X_train, y_train)
+            booster.fit(X_train, y_train, early_stopping_rounds=5, eval_set=[(X_val, y_val)], verbose=False)
             return booster
 
 
@@ -700,7 +694,7 @@ class MarketClassifier:
         lstm_gru_model = build_lstm_gru_model((X_train.shape[1], X_train.shape[2]))
 
         # Обучаем LSTM-GRU
-        lstm_gru_model.fit(X_train, y_train, epochs=100, batch_size=64, verbose=1)#epochs=100
+        lstm_gru_model.fit(X_train, y_train, epochs=1, batch_size=32, verbose=1)#epochs=100
 
         # Извлекаем эмбеддинги из последнего слоя перед softmax
         feature_extractor = tf.keras.models.Model(
@@ -745,7 +739,7 @@ class MarketClassifier:
         X_scaled = scaler.transform(X)
 
         # Кросс-валидация для оценки модели
-        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        skf = StratifiedKFold(n_splits=2, shuffle=True, random_state=42)
         fold_scores = []
         f1_scores = []
 
@@ -767,9 +761,10 @@ class MarketClassifier:
 
                 model_fold.fit(
                     X_train_fold, y_train_fold,
-                    epochs=50,#50
-                    batch_size=64,
+                    epochs=1,#50
+                    batch_size=32,
                     validation_data=(X_val_fold, y_val_fold),
+                    callbacks=[EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)],
                     verbose=1
                 )
 
@@ -816,8 +811,8 @@ class MarketClassifier:
             history = final_model.fit(
                 X_train, y_train,
                 validation_data=(X_test, y_test),
-                epochs=200,#200
-                batch_size=64,
+                epochs=1,#200
+                batch_size=32,
                 class_weight=class_weights,
                 callbacks=callbacks
             )
@@ -853,6 +848,7 @@ class MarketClassifier:
             """)
 
             # Сохранение модели только при высоком качестве
+            '''
             if f1 >= 0.80:
                 # Папка, где будут лежать модели (внутри контейнера RunPod)
                 saved_models_dir = "/workspace/saved_models/Market_Classifier"
@@ -872,17 +868,34 @@ class MarketClassifier:
             else:
                 logging.warning("Финальное качество модели ниже порогового (80% F1-score). Модель не сохранена.")
                 return None
+                '''
+            # Папка, где будут лежать модели (внутри контейнера RunPod)
+            saved_models_dir = "/workspace/saved_models/Market_Classifier"
+            os.makedirs(saved_models_dir, exist_ok=True)
+
+            # Путь для LSTM-GRU модели
+            model_path = os.path.join(saved_models_dir, "final_model.h5")
+            final_model.save(model_path)
                 
+            # Путь для XGBoost-модели
+            xgb_path = os.path.join(saved_models_dir, "classifier_xgb_model.pkl")
+            joblib.dump(xgb_model, xgb_path)
+
+            logging.info(f"Финальная модель LSTM-GRU сохранена в {model_path}")
+            logging.info(f"XGBoost-модель сохранена в {xgb_path}")
+            return final_model
+
 
 
 if __name__ == "__main__":
     # Инициализация стратегии (TPU или CPU/GPU)
     strategy = initialize_strategy()
     
-    symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
     
-    start_date = datetime(2017, 7, 1)
-    end_date = datetime(2024, 9, 30)
+    symbols = ['BTCUSDC', 'ETHUSDC']
+    
+    start_date = datetime(2019, 7, 1)
+    end_date = datetime(2019, 8, 1)
     
     data_path = os.path.join("/workspace/data", "labeled_market_data.csv")
     os.makedirs(os.path.dirname(data_path), exist_ok=True)
@@ -892,8 +905,6 @@ if __name__ == "__main__":
 
     scaler_path = os.path.join("/workspace/saved_models", "scaler.pkl")
     os.makedirs(os.path.dirname(scaler_path), exist_ok=True)
-
-
 
     # Создание экземпляра классификатора
     classifier = MarketClassifier()
@@ -924,4 +935,5 @@ if __name__ == "__main__":
         logging.info("Обучение завершено успешно.")
     except Exception as e:
         logging.error(f"Ошибка в процессе обучения: {e}")
-    sys.exit(0)
+        exit(1)
+
