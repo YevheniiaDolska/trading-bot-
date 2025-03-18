@@ -36,6 +36,18 @@ from sklearn.model_selection import GridSearchCV
 from utils_output import ensure_directory, copy_output, save_model_output
 
 
+# Создаем необходимые директории
+required_dirs = [
+    "/workspace/logs",
+    "/workspace/saved_models/flat",
+    "/workspace/checkpoints/flat",
+    "/workspace/data",
+    "/workspace/output/flat_ensemble"
+]
+
+for directory in required_dirs:
+    os.makedirs(directory, exist_ok=True)
+
 # Логирование
 logging.basicConfig(
     level=logging.INFO,

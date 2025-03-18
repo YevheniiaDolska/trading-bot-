@@ -44,6 +44,19 @@ from filterpy.kalman import KalmanFilter
 from utils_output import ensure_directory, copy_output, save_model_output
 
 
+# Создаем необходимые директории
+required_dirs = [
+    "/workspace/logs",
+    "/workspace/saved_models/bullish",
+    "/workspace/checkpoints/bullish",
+    "/workspace/data",
+    "/workspace/output/bullish_ensemble"
+]
+
+for directory in required_dirs:
+    os.makedirs(directory, exist_ok=True)
+
+
 network_name = "bullish_neural_network"
 checkpoint_path_regular = f"checkpoints/bullish/{network_name}_checkpoint_epoch_{{epoch:02d}}.h5"
 checkpoint_path_best = f"checkpoints/bullish/{network_name}_best_model.h5"

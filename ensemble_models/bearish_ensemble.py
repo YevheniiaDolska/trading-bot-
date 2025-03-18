@@ -40,7 +40,17 @@ from datetime import datetime
 from utils_output import ensure_directory, copy_output, save_model_output
   
 
-os.makedirs("/workspace/logs", exist_ok=True)
+# Создаем необходимые директории
+required_dirs = [
+    "/workspace/logs",
+    "/workspace/saved_models/bearish",
+    "/workspace/checkpoints/bearish",
+    "/workspace/data",
+    "/workspace/output/bearish_ensemble"
+]
+
+for directory in required_dirs:
+    os.makedirs(directory, exist_ok=True)
 
 # Логирование
 logging.basicConfig(

@@ -69,6 +69,17 @@ def initialize_strategy():
         strategy = tf.distribute.get_strategy()
     return strategy
 
+required_dirs = [
+    "/workspace/logs",
+    "/workspace/saved_models/flat",
+    "/workspace/checkpoints/flat",
+    "/workspace/data",
+    "/workspace/output/flat_ensemble"
+]
+
+for directory in required_dirs:
+    os.makedirs(directory, exist_ok=True)
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
