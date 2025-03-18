@@ -802,7 +802,8 @@ class MarketClassifier:
                 max_depth=3,
                 subsample=0.8,
                 colsample_bytree=0.8,
-                verbosity=1
+                verbosity=1,
+                use_label_encoder=False
             )
             # Здесь вместо X_val, y_val можно передать эмбеддинги тестового набора, например, X_test_features и y_test.
             booster.fit(X_train, y_train, early_stopping_rounds=5, eval_set=[(X_val, y_val)], verbose=False)
