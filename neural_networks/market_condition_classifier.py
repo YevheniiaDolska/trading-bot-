@@ -890,6 +890,7 @@ class MarketClassifier:
             inputs=final_model.input, outputs=final_model.layers[-3].output
         )
         X_test_features = feature_extractor.predict(X_test)
+        X_test_features = np.squeeze(X_test_features, axis=1)  # Убираем лишнюю ось, чтобы получить форму (n_samples, feature_dim)
 
         # Обучаем XGBoost на эмбеддингах; передаем X_test_features и y_test как eval_set
         xgb_model = self.train_xgboost(X_test_features, y_test, X_val=X_test_features, y_val=y_test)
