@@ -63,6 +63,8 @@ logging.basicConfig(
 # Имя файла для сохранения модели
 market_type = "bullish"
 
+model_name = "bullish_ensemble_checkpoint.pkl"
+
 ensemble_model_filename = os.path.join("/workspace/saved_models/bullish", "bullish_stacked_ensemble_model.pkl")
 
 checkpoint_base_dir = os.path.join("/workspace/checkpoints/bullish", market_type)
