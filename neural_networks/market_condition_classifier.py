@@ -923,10 +923,12 @@ class MarketClassifier:
         y_pred_ensemble = mode(np.vstack([y_pred_nn, y_pred_xgb]), axis=0)[0].flatten()
 
 
+        y_pred_classes = y_pred_ensemble
         accuracy = accuracy_score(y_test, y_pred_classes)
         precision = precision_score(y_test, y_pred_classes, average='weighted')
         recall = recall_score(y_test, y_pred_classes, average='weighted')
         f1 = f1_score(y_test, y_pred_classes, average='weighted')
+
 
         logging.info(f"""
             Метрики финальной модели:
