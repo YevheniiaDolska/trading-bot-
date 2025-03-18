@@ -73,11 +73,11 @@ def initialize_strategy():
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 network_name = "bearish_neural_network"  # Имя модели
-checkpoint_path_regular = os.path.join("/workspace/checkpoints", f"{network_name}_checkpoint_epoch_{{epoch:02d}}.h5")
-checkpoint_path_best = os.path.join("/workspace/checkpoints", f"{network_name}_best_model.h5")
+checkpoint_path_regular = os.path.join("/workspace/checkpoints/bearish", f"{network_name}_checkpoint_epoch_{{epoch:02d}}.h5")
+checkpoint_path_best = os.path.join("/workspace/checkpoints/bearish", f"{network_name}_best_model.h5")
 
 # Имя файла для сохранения модели
-nn_model_filename = os.path.join("/workspace/saved_models", 'bearish_nn_model.h5')
+nn_model_filename = os.path.join("/workspace/saved_models/bearish", 'bearish_nn_model.h5')
 log_file = os.path.join("/workspace/logs", "training_log_bearish_nn.txt")
 
 

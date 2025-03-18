@@ -53,9 +53,9 @@ logging.basicConfig(
 # Имя файла для сохранения модели
 market_type = "bearish"
 
-ensemble_model_filename = os.path.join("/workspace/saved_models", "bearish_stacked_ensemble_model.pkl")
+ensemble_model_filename = os.path.join("/workspace/saved_models/bearish", "bearish_stacked_ensemble_model.pkl")
 
-checkpoint_base_dir = os.path.join("/workspace/checkpoints", market_type)
+checkpoint_base_dir = os.path.join("/workspace/checkpoints/bearish", market_type)
 
 ensemble_checkpoint_path = os.path.join(checkpoint_base_dir, f"{market_type}_ensemble_checkpoint.pkl")
 
@@ -98,7 +98,7 @@ def _on_rm_error(func, path, exc_info):
 
 # Функция для формирования пути к чекпоинтам
 def get_checkpoint_path(model_name, market_type):
-    cp_path = os.path.join("/workspace/checkpoints", market_type, model_name)
+    cp_path = os.path.join("/workspace/checkpoints/bearish", market_type, model_name)
     ensure_directory(cp_path)
     return cp_path
         

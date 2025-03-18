@@ -73,13 +73,13 @@ def initialize_strategy():
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Имя файла для сохранения модели
-nn_model_filename = os.path.join("/workspace/saved_models", 'flat_nn_model.h5')
+nn_model_filename = os.path.join("/workspace/saved_models/flat", 'flat_nn_model.h5')
 log_file = os.path.join("/workspace/logs", "training_log_flat_nn.txt")
 
 
 network_name = "flat_neural_network"  # Имя модели
-checkpoint_path_regular = os.path.join("/workspace/checkpoints", f"{network_name}_checkpoint_epoch_{{epoch:02d}}.h5")
-checkpoint_path_best = os.path.join("/workspace/checkpoints", f"{network_name}_best_model.h5")
+checkpoint_path_regular = os.path.join("/workspace/checkpoints/flat", f"{network_name}_checkpoint_epoch_{{epoch:02d}}.h5")
+checkpoint_path_best = os.path.join("/workspace/checkpoints/flat", f"{network_name}_best_model.h5")
 
 
 def save_logs_to_file(log_message):

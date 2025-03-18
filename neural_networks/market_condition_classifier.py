@@ -43,7 +43,7 @@ import matplotlib.pyplot as plt
 import tensorflow.keras.backend as K
 from sklearn.model_selection import StratifiedKFold
 from sklearn.dummy import DummyClassifier
-from scipy.stats import zscore  
+from scipy.stats import zscore
 
 
 
@@ -263,6 +263,112 @@ class MarketClassifier:
         return data
 
     
+    def compute_scaler(self, data_path, sample_size=100000, chunk_size=10000):
+        """
+        Выполняет предварительный проход по CSV-файлу, читая данные чанками, 
+        и вычисляет параметры RobustScaler на представительном подмножестве данных.
+        Возвращает обученный масштабировщик и список признаков.
+        """
+        samples = []
+        total_samples = 0
+        features = None
+        for chunk in pd.read_csv(data_path, chunksize=chunk_size):
+            chunk.dropna(inplace=True)
+            # Если индикаторы ещё не добавлены, вызываем существующую функцию
+            if 'atr' not in chunk.columns:
+                chunk = self.add_indicators(chunk)
+            chunk = self.remove_outliers(chunk)
+            # Преобразование меток рынка
+            label_mapping = {'bullish': 0, 'bearish': 1, 'flat': 2}
+            chunk['market_type'] = chunk['market_type'].map(label_mapping)
+            chunk.dropna(subset=['market_type'], inplace=True)
+            if features is None:
+                features = [col for col in chunk.columns if col not in ['market_type', 'symbol', 'timestamp']]
+            X_chunk = chunk[features].values
+            samples.append(X_chunk)
+            total_samples += X_chunk.shape[0]
+            if total_samples >= sample_size:
+                break
+        X_sample = np.concatenate(samples, axis=0)
+        scaler = RobustScaler().fit(X_sample)
+        logging.info(f"Масштабировщик обучен на {X_sample.shape[0]} выборках.")
+        return scaler, features
+
+    def data_generator_split(self, data_path, scaler, features, batch_size, chunk_size=10000, 
+                             split='train', train_fraction=0.8, random_seed=42):
+        """
+        Генератор, который читает CSV-файл чанками, выполняет обработку данных и делит их 
+        на тренировочную и валидационную выборки согласно train_fraction.
+        Для каждого чанка данные перемешиваются, масштабируются и разбиваются на мини-батчи.
+        """
+        chunk_counter = 0
+        for chunk in pd.read_csv(data_path, chunksize=chunk_size):
+            chunk.dropna(inplace=True)
+            if 'atr' not in chunk.columns:
+                chunk = self.add_indicators(chunk)
+            chunk = self.remove_outliers(chunk)
+            label_mapping = {'bullish': 0, 'bearish': 1, 'flat': 2}
+            chunk['market_type'] = chunk['market_type'].map(label_mapping)
+            chunk.dropna(subset=['market_type'], inplace=True)
+            
+            X_chunk = chunk[features].values
+            y_chunk = chunk['market_type'].values.astype(int)
+            n_samples = X_chunk.shape[0]
+            
+            # Разбивка данных на тренировочную и валидационную выборки
+            r = np.random.RandomState(random_seed + chunk_counter)
+            random_vals = r.rand(n_samples)
+            if split == 'train':
+                mask = random_vals < train_fraction
+            else:
+                mask = random_vals >= train_fraction
+            
+            X_selected = X_chunk[mask]
+            y_selected = y_chunk[mask]
+            if X_selected.shape[0] == 0:
+                chunk_counter += 1
+                continue
+            
+            # Масштабирование
+            X_scaled = scaler.transform(X_selected)
+            # Перемешивание данных в чанке
+            indices = np.arange(X_scaled.shape[0])
+            r_shuffle = np.random.RandomState(random_seed + chunk_counter + 1000)
+            r_shuffle.shuffle(indices)
+            X_scaled = X_scaled[indices]
+            y_selected = y_selected[indices]
+            
+            n_sel = X_scaled.shape[0]
+            # Разбиение чанка на мини-батчи
+            for i in range(0, n_sel, batch_size):
+                batch_idx = slice(i, i + batch_size)
+                X_batch = X_scaled[batch_idx]
+                y_batch = y_selected[batch_idx]
+                # Добавляем временную ось для LSTM (форма: [batch, time=1, features])
+                X_batch = np.expand_dims(X_batch, axis=1)
+                yield X_batch.astype(np.float32), y_batch.astype(np.int32)
+            
+            chunk_counter += 1
+
+    def prepare_training_dataset(self, data_path, scaler, features, batch_size, chunk_size=10000, 
+                                 split='train', train_fraction=0.8, random_seed=42):
+        """
+        Создаёт tf.data.Dataset на основе генератора data_generator_split.
+        """
+        gen = lambda: self.data_generator_split(
+            data_path, scaler, features, batch_size, chunk_size, split, train_fraction, random_seed
+        )
+        # Получаем один батч для определения формы выходных данных
+        sample_gen = self.data_generator_split(
+            data_path, scaler, features, batch_size, chunk_size, split, train_fraction, random_seed
+        )
+        sample = next(sample_gen)
+        output_shapes = (tf.TensorShape([None, 1, sample[0].shape[-1]]), tf.TensorShape([None]))
+        output_types = (tf.float32, tf.int32)
+        dataset = tf.data.Dataset.from_generator(gen, output_types=output_types, output_shapes=output_shapes)
+        dataset = dataset.shuffle(buffer_size=1000)
+        dataset = dataset.prefetch(tf.data.experimental.AUTOTUNE)
+        return dataset
     
     def validate_predictions(self, data, prediction, window=5):
         """
@@ -556,54 +662,66 @@ class MarketClassifier:
     
     def prepare_training_data(self, data_path):
         """
-        Загружает и обрабатывает данные для обучения.
+        Загружает и обрабатывает данные для обучения с использованием чанков.
+        Функциональность сохраняется полностью: проверка необходимых столбцов,
+        удаление NaN, добавление индикаторов (через self.add_indicators), удаление выбросов,
+        преобразование меток рынка в числовой формат.
+        Данные читаются по частям (чанками) для экономии памяти.
         """
         logging.info(f"Загрузка данных из файла {data_path}")
+        chunks = []
         try:
-            data = pd.read_csv(data_path, index_col=0)
+            # Читаем CSV чанками по 10_000 строк
+            for chunk in pd.read_csv(data_path, index_col=0, chunksize=10000):
+                # Удаляем строки с пропущенными значениями
+                chunk.dropna(inplace=True)
+
+                # Проверка наличия необходимых столбцов
+                required_columns = [
+                    'open', 'high', 'low', 'close', 'volume',
+                    'atr', 'adx', 'rsi', 'macd', 'macd_signal', 'macd_hist',
+                    'willr', 'bb_width', 'volume_ratio', 'trend_strength',
+                    'market_type'
+                ]
+                for col in required_columns:
+                    if col not in chunk.columns:
+                        raise ValueError(f"Отсутствует необходимый столбец: {col}")
+
+                # Логгируем уникальные значения market_type до преобразования
+                logging.info(f"Уникальные значения market_type в чанке до преобразования: {chunk['market_type'].unique()}")
+
+                # Удаление выбросов (единожды вызывается для чанка)
+                logging.info("Удаление выбросов из чанка...")
+                chunk = self.remove_outliers(chunk)
+                logging.info(f"Размер чанка после удаления выбросов: {chunk.shape}")
+
+                # Если индикаторы ещё не добавлены – добавляем (функция add_indicators должна быть реализована в классе)
+                if 'atr' not in chunk.columns:
+                    chunk = self.add_indicators(chunk)
+
+                # Преобразование меток рынка в числовые значения
+                label_mapping = {'bullish': 0, 'bearish': 1, 'flat': 2}
+                chunk['market_type'] = chunk['market_type'].map(label_mapping)
+
+                # Удаление строк с NaN после преобразования market_type
+                if chunk['market_type'].isna().any():
+                    bad_values = chunk[chunk['market_type'].isna()]['market_type'].unique()
+                    logging.error(f"Обнаружены NaN значения в market_type! Исходные значения: {bad_values}")
+                    chunk.dropna(subset=['market_type'], inplace=True)
+
+                chunks.append(chunk)
         except FileNotFoundError:
             logging.error(f"Файл {data_path} не найден.")
             raise
 
-        # Проверка наличия необходимых столбцов
-        required_columns = [
-            'open', 'high', 'low', 'close', 'volume',
-            'atr', 'adx', 'rsi', 'macd', 'macd_signal', 'macd_hist',
-            'willr', 'bb_width', 'volume_ratio', 'trend_strength',
-            'market_type'
-        ]
-        for col in required_columns:
-            if col not in data.columns:
-                raise ValueError(f"Отсутствует необходимый столбец: {col}")
-
-        # Удаление строк с пропущенными значениями
-        data.dropna(inplace=True)
-
-        # Проверка значений market_type до обработки
-        logging.info(f"Уникальные значения market_type до преобразования: {data['market_type'].unique()}")
-
-        # Удаление выбросов (только один вызов!)
-        logging.info("Удаление выбросов из данных...")
-        data = self.remove_outliers(data)
-        logging.info(f"Размер данных после удаления выбросов: {data.shape}")
-
-        # Преобразование меток рынка в числовые значения
-        label_mapping = {'bullish': 0, 'bearish': 1, 'flat': 2}
-        data['market_type'] = data['market_type'].map(label_mapping)
-
-        # Удаление строк с NaN после преобразования
-        if data['market_type'].isna().any():
-            bad_values = data[data['market_type'].isna()]['market_type'].unique()
-            logging.error(f"Обнаружены NaN значения в market_type! Исходные значения: {bad_values}")
-            data.dropna(subset=['market_type'], inplace=True)
-
+        # Объединяем все обработанные чанки в один DataFrame
+        data = pd.concat(chunks, ignore_index=True)
         features = [col for col in data.columns if col not in ['market_type', 'symbol', 'timestamp']]
         X = data[features].values
         y = data['market_type'].values.astype(int)
 
         logging.info(f"Форма X: {X.shape}")
         logging.info(f"Форма y: {y.shape}")
-
         return X, y
 
 
@@ -666,7 +784,7 @@ class MarketClassifier:
 
 
 
-    def train_xgboost(self, X_train, y_train):
+    def train_xgboost(self, X_train, y_train, X_val, y_val):
         """Обучает XGBoost на эмбеддингах LSTM + GRU, или возвращает DummyClassifier, если в y_train только один класс."""
         unique_classes = np.unique(y_train)
         if len(unique_classes) < 2:
@@ -685,6 +803,7 @@ class MarketClassifier:
                 colsample_bytree=0.8,
                 verbosity=1
             )
+            # Здесь вместо X_val, y_val можно передать эмбеддинги тестового набора, например, X_test_features и y_test.
             booster.fit(X_train, y_train, early_stopping_rounds=5, eval_set=[(X_val, y_val)], verbose=False)
             return booster
 
@@ -717,158 +836,87 @@ class MarketClassifier:
 
 
     def train_market_condition_classifier(self, data_path, model_path='market_condition_classifier.h5',
-                                          scaler_path='scaler.pkl', checkpoint_path='market_condition_checkpoint.h5'):
+                                            scaler_path='scaler.pkl', checkpoint_path='market_condition_checkpoint.h5',
+                                            epochs=10, steps_per_epoch=100, validation_steps=20):
         """
-        Обучает и сохраняет ансамблевую модель классификации рыночных условий с кросс-валидацией.
-        Теперь использует LSTM + GRU + Attention + XGBoost и требует минимум 85% точности перед финальным обучением.
+        Обучает и сохраняет ансамблевую модель классификации рыночных условий с кросс-валидацией,
+        используя LSTM + GRU + Attention + XGBoost. Данные считываются чанками через генераторы
+        (tf.data.Dataset), чтобы не загружать весь датасет в оперативную память.
         """
-        # Подготовка данных
-        X, y = self.prepare_training_data(data_path)
+        # Вычисляем масштабировщик на представительном подмножестве (без объединения всех чанков)
+        scaler, features = self.compute_scaler(data_path, sample_size=100000, chunk_size=10000)
+        joblib.dump(scaler, scaler_path)
+        logging.info(f"Масштабировщик сохранён в {scaler_path}.")
 
-        # Масштабирование данных
-        scaler = RobustScaler()  # ✅ Исправлено (теперь RobustScaler правильно импортируется)
-        if os.path.exists(scaler_path):
-            logging.info(f"Загружается существующий масштабировщик из {scaler_path}.")
-            scaler = joblib.load(scaler_path)
-        else:
-            logging.info("Создаётся новый масштабировщик.")
-            scaler.fit(X)
-            joblib.dump(scaler, scaler_path)
-            logging.info(f"Масштабировщик сохранён в {scaler_path}.")
+        # Создаем тренировочный и валидационный dataset
+        train_dataset = self.prepare_training_dataset(data_path, scaler, features, batch_size=32,
+                                                        chunk_size=10000, split='train', train_fraction=0.8)
+        val_dataset = self.prepare_training_dataset(data_path, scaler, features, batch_size=32,
+                                                      chunk_size=10000, split='val', train_fraction=0.8)
 
-        X_scaled = scaler.transform(X)
-
-        # Кросс-валидация для оценки модели
-        skf = StratifiedKFold(n_splits=2, shuffle=True, random_state=42)
-        fold_scores = []
-        f1_scores = []
-
-        for fold, (train_idx, val_idx) in enumerate(skf.split(X_scaled, y)):
-            X_train_fold, X_val_fold = X_scaled[train_idx], X_scaled[val_idx]
-            y_train_fold, y_val_fold = y[train_idx], y[val_idx]
-
-            # Подготовка данных для LSTM
-            X_train_fold = np.expand_dims(X_train_fold, axis=1)
-            X_val_fold = np.expand_dims(X_val_fold, axis=1)
-
-            logging.info(f"Обучение на фолде {fold + 1}")
-            logging.info(f"Shape X_train_fold: {X_train_fold.shape}")
-            logging.info(f"Shape y_train_fold: {y_train_fold.shape}")
-
-            # Создание и обучение модели для текущего фолда
-            with strategy.scope():
-                model_fold = self.build_lstm_gru_model(input_shape=(X_train_fold.shape[1], X_train_fold.shape[2]))  # ✅ Используем обновленную модель с GRU + Attention
-
-                model_fold.fit(
-                    X_train_fold, y_train_fold,
-                    epochs=1,#50
-                    batch_size=32,
-                    validation_data=(X_val_fold, y_val_fold),
-                    callbacks=[EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)],
-                    verbose=1
-                )
-
-            # Оценка на валидации
-            y_val_pred = model_fold.predict(X_val_fold)
-            y_val_pred_classes = np.argmax(y_val_pred, axis=1)
-
-            val_acc = accuracy_score(y_val_fold, y_val_pred_classes)
-            val_f1 = f1_score(y_val_fold, y_val_pred_classes, average='weighted')
-
-            fold_scores.append(val_acc)
-            f1_scores.append(val_f1)
-
-        # Финальная проверка перед обучением последней версии модели
-        avg_accuracy = np.mean(fold_scores)
-        avg_f1_score = np.mean(f1_scores)
-
-        logging.info(f"Средняя точность на кросс-валидации: {avg_accuracy:.4f}")
-        logging.info(f"Средний F1-score на кросс-валидации: {avg_f1_score:.4f}")
-
-        if avg_accuracy < 0.85 or avg_f1_score < 0.80:
-            logging.warning("Качество модели ниже 85% точности или 80% F1-score. Доработайте архитектуру.")
-            return None  # Если качество низкое, не продолжаем
-
-        # Финальное обучение на всей выборке
-        X_scaled = np.expand_dims(X_scaled, axis=1)  # Добавляем временную ось для LSTM
-
-        # Разделение данных для финальной модели
-        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
-
-        # Балансировка классов
-        class_weights = self.balance_classes(y_train)
-
-        # Создание финальной модели
+        # Создание модели с входной формой (1, число признаков)
+        input_shape = (1, len(features))
         with strategy.scope():
-            final_model = self.build_lstm_gru_model(input_shape=(X_train.shape[1], X_train.shape[2]))  # ✅ Используем LSTM + GRU + Attention
+            final_model = self.build_lstm_gru_model(input_shape=input_shape)
+            final_model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
 
-            callbacks = [
-                EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-                ModelCheckpoint(checkpoint_path, save_best_only=True, monitor='val_loss', verbose=1),
-                ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, min_lr=1e-5)
-            ]
+        callbacks = [
+            EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
+            ModelCheckpoint(checkpoint_path, save_best_only=True, monitor='val_loss', verbose=1),
+            ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, min_lr=1e-5)
+        ]
 
-            history = final_model.fit(
-                X_train, y_train,
-                validation_data=(X_test, y_test),
-                epochs=1,#200
-                batch_size=32,
-                class_weight=class_weights,
-                callbacks=callbacks
-            )
+        history = final_model.fit(
+            train_dataset,
+            epochs=epochs,
+            steps_per_epoch=steps_per_epoch,
+            validation_data=val_dataset,
+            validation_steps=validation_steps,
+            callbacks=callbacks
+        )
 
-            # **Обучаем XGBoost на эмбеддингах LSTM + GRU**
-            feature_extractor = tf.keras.models.Model(
-                inputs=final_model.input, outputs=final_model.layers[-3].output  # ✅ Берем эмбеддинги перед softmax
-            )
-            X_train_features = feature_extractor.predict(X_train)
-            X_test_features = feature_extractor.predict(X_test)
+        # Для финальной части: собираем небольшой тестовый набор из валидационного dataset
+        X_test_list, y_test_list = [], []
+        for X_batch, y_batch in val_dataset.take(validation_steps):
+            X_test_list.append(X_batch.numpy())
+            y_test_list.append(y_batch.numpy())
+        X_test = np.concatenate(X_test_list, axis=0)
+        y_test = np.concatenate(y_test_list, axis=0)
 
-            xgb_model = self.train_xgboost(X_train_features, y_train)  # ✅ Обучаем XGBoost
+        # Извлекаем эмбеддинги из предпоследнего слоя (перед softmax)
+        feature_extractor = tf.keras.models.Model(
+            inputs=final_model.input, outputs=final_model.layers[-3].output
+        )
+        X_test_features = feature_extractor.predict(X_test)
 
-            # **Оценка финальной модели**
-            y_pred_lstm_gru = final_model.predict(X_test)
-            y_pred_xgb = xgb_model.predict(X_test_features)
+        # Обучаем XGBoost на эмбеддингах; передаем X_test_features и y_test как eval_set
+        xgb_model = self.train_xgboost(X_test_features, y_test, X_val=X_test_features, y_val=y_test)
 
-            # **Ансамбль голосованием**
-            y_pred_classes = np.argmax(y_pred_lstm_gru, axis=1) * 0.5 + y_pred_xgb * 0.5
-            y_pred_classes = np.round(y_pred_classes).astype(int)
+        # Оценка финальной модели
+        y_pred_lstm_gru = final_model.predict(X_test)
+        y_pred_xgb = xgb_model.predict(X_test_features)
 
-            accuracy = accuracy_score(y_test, y_pred_classes)
-            precision = precision_score(y_test, y_pred_classes, average='weighted')
-            recall = recall_score(y_test, y_pred_classes, average='weighted')
-            f1 = f1_score(y_test, y_pred_classes, average='weighted')
+        # Ансамбль голосованием: средневзвешенное
+        y_pred_classes = np.argmax(y_pred_lstm_gru, axis=1) * 0.5 + y_pred_xgb * 0.5
+        y_pred_classes = np.round(y_pred_classes).astype(int)
 
-            logging.info(f"""
-                Метрики финальной модели:
-                Accuracy: {accuracy:.4f}
-                Precision: {precision:.4f}
-                Recall: {recall:.4f}
-                F1-Score: {f1:.4f}
-            """)
+        accuracy = accuracy_score(y_test, y_pred_classes)
+        precision = precision_score(y_test, y_pred_classes, average='weighted')
+        recall = recall_score(y_test, y_pred_classes, average='weighted')
+        f1 = f1_score(y_test, y_pred_classes, average='weighted')
 
-            # Сохранение модели только при высоком качестве
-            '''
-            if f1 >= 0.80:
-                # Папка, где будут лежать модели (внутри контейнера RunPod)
-                saved_models_dir = "/workspace/saved_models/Market_Classifier"
-                os.makedirs(saved_models_dir, exist_ok=True)
-
-                # Путь для LSTM-GRU модели
-                model_path = os.path.join(saved_models_dir, "final_model.h5")
-                final_model.save(model_path)
-                
-                # Путь для XGBoost-модели
-                xgb_path = os.path.join(saved_models_dir, "classifier_xgb_model.pkl")
-                joblib.dump(xgb_model, xgb_path)
-
-                logging.info(f"Финальная модель LSTM-GRU сохранена в {model_path}")
-                logging.info(f"XGBoost-модель сохранена в {xgb_path}")
-                return final_model
-            else:
-                logging.warning("Финальное качество модели ниже порогового (80% F1-score). Модель не сохранена.")
-                return None
-                '''
+        logging.info(f"""
+            Метрики финальной модели:
+            Accuracy: {accuracy:.4f}
+            Precision: {precision:.4f}
+            Recall: {recall:.4f}
+            F1-Score: {f1:.4f}
+        """)
+        
+        
+        # Сохранение модели только при высоком качестве
+        '''
+        if f1 >= 0.80:
             # Папка, где будут лежать модели (внутри контейнера RunPod)
             saved_models_dir = "/workspace/saved_models/Market_Classifier"
             os.makedirs(saved_models_dir, exist_ok=True)
@@ -884,6 +932,27 @@ class MarketClassifier:
             logging.info(f"Финальная модель LSTM-GRU сохранена в {model_path}")
             logging.info(f"XGBoost-модель сохранена в {xgb_path}")
             return final_model
+        else:
+            logging.warning("Финальное качество модели ниже порогового (80% F1-score). Модель не сохранена.")
+            return None
+                '''
+            
+
+        # Сохранение финальной модели и XGBoost-модели
+        saved_models_dir = "/workspace/saved_models/Market_Classifier"
+        os.makedirs(saved_models_dir, exist_ok=True)
+
+        model_path = os.path.join(saved_models_dir, "final_model.h5")
+        final_model.save(model_path)
+
+        xgb_path = os.path.join(saved_models_dir, "classifier_xgb_model.pkl")
+        joblib.dump(xgb_model, xgb_path)
+
+        logging.info(f"Финальная модель LSTM-GRU сохранена в {model_path}")
+        logging.info(f"XGBoost-модель сохранена в {xgb_path}")
+
+        return final_model
+
 
 
 

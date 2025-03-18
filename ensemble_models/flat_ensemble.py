@@ -50,10 +50,10 @@ logging.basicConfig(
 # Имя файла для сохранения модели
 market_type = "flat"
 
-ensemble_model_filename = os.path.join("/workspace/saved_models", "flat_stacked_ensemble_model.pkl")
+ensemble_model_filename = os.path.join("/workspace/saved_models/flat", "flat_stacked_ensemble_model.pkl")
 
 
-checkpoint_base_dir = os.path.join("/workspace/checkpoints", market_type)
+checkpoint_base_dir = os.path.join("/workspace/checkpoints/flat", market_type)
 
 
 ensemble_checkpoint_path = os.path.join(checkpoint_base_dir, f"{market_type}_ensemble_checkpoint.pkl")
