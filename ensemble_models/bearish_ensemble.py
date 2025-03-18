@@ -1477,11 +1477,10 @@ def train_ensemble_model(data, selected_features, model_filename='models/bearish
     # Определяем базовую модель с ранней остановкой
     base_lr = LogisticRegression(
         penalty='l2',
-        max_iter=30000,
+        max_iter=5000,
         tol=1e-8,
         solver='saga',
         multi_class='multinomial',
-        early_stopping=True,
         validation_fraction=0.1,
         random_state=42
     )
