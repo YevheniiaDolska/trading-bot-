@@ -1481,7 +1481,6 @@ def train_ensemble_model(data, selected_features, model_filename='models/bearish
         tol=1e-8,
         solver='saga',
         multi_class='multinomial',
-        validation_fraction=0.1,
         random_state=42
     )
 
