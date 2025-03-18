@@ -815,7 +815,7 @@ class MarketClassifier:
         lstm_gru_model = build_lstm_gru_model((X_train.shape[1], X_train.shape[2]))
 
         # Обучаем LSTM-GRU
-        lstm_gru_model.fit(X_train, y_train, epochs=1, batch_size=32, verbose=1)#epochs=100
+        lstm_gru_model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=1)#epochs=100
 
         # Извлекаем эмбеддинги из последнего слоя перед softmax
         feature_extractor = tf.keras.models.Model(
@@ -839,7 +839,7 @@ class MarketClassifier:
 
     def train_market_condition_classifier(self, data_path, model_path='market_condition_classifier.h5',
                                             scaler_path='scaler.pkl', checkpoint_path='market_condition_checkpoint.h5',
-                                            epochs=10, steps_per_epoch=100, validation_steps=20):
+                                            epochs=100, steps_per_epoch=100, validation_steps=20):
         """
         Обучает и сохраняет ансамблевую модель классификации рыночных условий с кросс-валидацией,
         используя LSTM + GRU + Attention + XGBoost. Данные считываются чанками через генераторы
@@ -940,7 +940,6 @@ class MarketClassifier:
         
         
         # Сохранение модели только при высоком качестве
-        '''
         if f1 >= 0.80:
             # Папка, где будут лежать модели (внутри контейнера RunPod)
             saved_models_dir = "/workspace/saved_models/Market_Classifier"
@@ -960,23 +959,7 @@ class MarketClassifier:
         else:
             logging.warning("Финальное качество модели ниже порогового (80% F1-score). Модель не сохранена.")
             return None
-                '''
             
-
-        # Сохранение финальной модели и XGBoost-модели
-        saved_models_dir = "/workspace/saved_models/Market_Classifier"
-        os.makedirs(saved_models_dir, exist_ok=True)
-
-        model_path = os.path.join(saved_models_dir, "final_model.h5")
-        final_model.save(model_path)
-
-        xgb_path = os.path.join(saved_models_dir, "classifier_xgb_model.pkl")
-        joblib.dump(xgb_model, xgb_path)
-
-        logging.info(f"Финальная модель LSTM-GRU сохранена в {model_path}")
-        logging.info(f"XGBoost-модель сохранена в {xgb_path}")
-
-        return final_model
 
 
 
@@ -985,11 +968,10 @@ if __name__ == "__main__":
     # Инициализация стратегии (TPU или CPU/GPU)
     strategy = initialize_strategy()
     
+    symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
     
-    symbols = ['BTCUSDC', 'ETHUSDC']
-    
-    start_date = datetime(2019, 7, 1)
-    end_date = datetime(2019, 8, 1)
+    start_date = datetime(2018, 1, 1)
+    end_date = datetime(2021, 12, 31)
     
     data_path = os.path.join("/workspace/data", "labeled_market_data.csv")
     os.makedirs(os.path.dirname(data_path), exist_ok=True)

@@ -268,7 +268,7 @@ def preprocess_market_data(data_dict):
 
 # ------------------ CheckpointGradientBoosting ------------------
 class CheckpointGradientBoosting(GradientBoostingClassifier):
-    def __init__(self, n_estimators=1, learning_rate=0.1, max_depth=3, #n_estimators=100
+    def __init__(self, n_estimators=100, learning_rate=0.1, max_depth=3, #n_estimators=100
                  random_state=None, subsample=1.0, min_samples_split=2,
                  min_samples_leaf=1, **kwargs):
         # Извлекаем _checkpoint_dir, если передан, иначе создаём новый путь
@@ -337,7 +337,7 @@ class CheckpointGradientBoosting(GradientBoostingClassifier):
         return self
 
 class CheckpointXGBoost(XGBClassifier):
-    def __init__(self, n_estimators=1, max_depth=3, learning_rate=0.1, #n_estimators=100
+    def __init__(self, n_estimators=100, max_depth=3, learning_rate=0.1, #n_estimators=100
                  min_child_weight=1, subsample=1.0, colsample_bytree=1.0,
                  random_state=None, objective=None, **kwargs):
         super().__init__(
@@ -401,7 +401,7 @@ class CheckpointXGBoost(XGBClassifier):
 
 
 class CheckpointLightGBM(LGBMClassifier):
-    def __init__(self, n_estimators=1, num_leaves=31, learning_rate=0.1, #n_estimators=100
+    def __init__(self, n_estimators=100, num_leaves=31, learning_rate=0.1, #n_estimators=100
                  min_data_in_leaf=20, max_depth=-1, random_state=None, **kwargs):
         self._checkpoint_dir = kwargs.pop('_checkpoint_dir', get_checkpoint_path("lightgbm", market_type))
         super().__init__(n_estimators=n_estimators, num_leaves=num_leaves,
@@ -451,7 +451,7 @@ class CheckpointLightGBM(LGBMClassifier):
 SKIP_CHECKPOINT = False
 
 class CheckpointCatBoost(CatBoostClassifier):
-    def __init__(self, iterations=1, depth=6, learning_rate=0.1, #iterations=1000
+    def __init__(self, iterations=1000, depth=6, learning_rate=0.1, #iterations=1000
                  random_state=None, **kwargs):
         # Если параметр 'save_snapshot' передан, удаляем его, чтобы избежать конфликтов
         if 'save_snapshot' in kwargs:
@@ -512,7 +512,7 @@ class CheckpointCatBoost(CatBoostClassifier):
 
 
 class CheckpointRandomForest(RandomForestClassifier):
-    def __init__(self, n_estimators=1, max_depth=None, #n_estimators=100
+    def __init__(self, n_estimators=100, max_depth=None, #n_estimators=100
                  min_samples_split=2, min_samples_leaf=1, random_state=None, **kwargs):
         self._checkpoint_dir = kwargs.pop('_checkpoint_dir', get_checkpoint_path("random_forest", market_type))
         super().__init__(n_estimators=n_estimators, max_depth=max_depth,
@@ -1419,33 +1419,33 @@ def train_ensemble_model(data, selected_features, model_filename='models/bearish
     base_learners = []
 
     # 10. Инициализация базовых моделей с классами чекпоинтов
-    rf_model = CheckpointRandomForest(n_estimators=1, max_depth=6, min_samples_leaf=5) #n_estimators=200
-    gb_model = CheckpointGradientBoosting(n_estimators=1, max_depth=5, learning_rate=0.03, subsample=0.8) #n_estimators=150
-    xgb_model = CheckpointXGBoost(n_estimators=1, max_depth=5, subsample=0.8, #n_estimators=150
+    rf_model = CheckpointRandomForest(n_estimators=200, max_depth=6, min_samples_leaf=5) #n_estimators=200
+    gb_model = CheckpointGradientBoosting(n_estimators=150, max_depth=5, learning_rate=0.03, subsample=0.8) #n_estimators=150
+    xgb_model = CheckpointXGBoost(n_estimators=150, max_depth=5, subsample=0.8, #n_estimators=150
                                   min_child_weight=3, learning_rate=0.03,
                                   objective='multi:softprob', num_class=3)
-    lgbm_model = CheckpointLightGBM(n_estimators=1, num_leaves=32, learning_rate=0.03, #n_estimators=150
+    lgbm_model = CheckpointLightGBM(n_estimators=150, num_leaves=32, learning_rate=0.03, #n_estimators=150
                                     min_data_in_leaf=5, random_state=42,
                                     objective="multiclass", num_class=3)
-    catboost_model = CheckpointCatBoost(iterations=1, depth=6, learning_rate=0.03, #iterations=300
+    catboost_model = CheckpointCatBoost(iterations=300, depth=6, learning_rate=0.03, #iterations=300
                                          min_data_in_leaf=5, random_state=42,
                                          loss_function='MultiClass')
     for name, model in [('rf', rf_model), ('gb', gb_model), ('xgb', xgb_model),
                         ('lgbm', lgbm_model), ('catboost', catboost_model)]:
         if perform_grid_search:
             if name == 'rf':
-                param_grid = {'n_estimators': [1, 2], 'max_depth': [4, 6, 8], 'min_samples_leaf': [5, 8]} #'n_estimators': [150, 200],
+                param_grid = {'n_estimators': [150, 200], 'max_depth': [4, 6, 8], 'min_samples_leaf': [5, 8]} #'n_estimators': [150, 200],
             elif name == 'gb':
-                param_grid = {'n_estimators': [1, 2], 'max_depth': [4, 5, 6], #'n_estimators': [150, 200],
+                param_grid = {'n_estimators': [150, 200], 'max_depth': [4, 5, 6], #'n_estimators': [150, 200],
                               'learning_rate': [0.03, 0.05], 'subsample': [0.8, 0.9]}
             elif name == 'xgb':
-                param_grid = {'n_estimators': [1, 2], 'max_depth': [4, 5, 6], #'n_estimators': [150, 200],
+                param_grid = {'n_estimators': [150, 200], 'max_depth': [4, 5, 6], #'n_estimators': [150, 200],
                               'learning_rate': [0.03, 0.05], 'min_child_weight': [3, 5]}
             elif name == 'lgbm':
-                param_grid = {'n_estimators': [1, 2], 'num_leaves': [32, 40], #'n_estimators': [150, 200],
+                param_grid = {'n_estimators': [150, 200], 'num_leaves': [32, 40], #'n_estimators': [150, 200],
                               'learning_rate': [0.03, 0.05], 'min_data_in_leaf': [5, 8]}
             elif name == 'catboost':
-                param_grid = {'iterations': [1, 2], 'depth': [5, 6], #'iterations': [300, 350],
+                param_grid = {'iterations': [300, 350], 'depth': [5, 6], #'iterations': [300, 350],
                               'learning_rate': [0.03, 0.05]}
             grid_search = GridSearchCV(model, param_grid, cv=2, scoring='f1_weighted', n_jobs=1)
             grid_search.fit(scaler.transform(X_sample), y_sample)
@@ -1536,11 +1536,15 @@ if __name__ == "__main__":
 
     strategy = initialize_strategy()
     
-    symbols = ['BTCUSDC', 'ETHUSDC']
+    symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
     
     bearish_periods = [
-            
-            {"start": "2021-05-30", "end": "2021-06-30"},
+            {"start": "2018-01-17", "end": "2018-03-31"},
+            {"start": "2018-09-01", "end": "2018-12-31"},
+            {"start": "2021-05-12", "end": "2021-08-31"},
+            {"start": "2022-05-01", "end": "2022-07-31"},
+            {"start": "2022-09-01", "end": "2022-12-15"},
+            {"start": "2022-12-16", "end": "2023-01-31"}
         ]
     
     try:
