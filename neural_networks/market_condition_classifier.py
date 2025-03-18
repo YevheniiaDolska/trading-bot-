@@ -775,7 +775,7 @@ class MarketClassifier:
         x = Dropout(0.3)(x)
         x = Dense(64, activation='relu', kernel_regularizer=l2(0.01))(attention)
         x = Dropout(0.3)(x)
-        x = Dense(32, activation='relu', kernel_regularizer=l2(0.01))(x)
+        x = Dense(32, activation='relu', name="embedding_layer", kernel_regularizer=l2(0.01))(x)
         outputs = Dense(3, activation='softmax')(x)
 
         model = tf.keras.models.Model(inputs, outputs)
@@ -887,10 +887,12 @@ class MarketClassifier:
 
         # Извлекаем эмбеддинги из предпоследнего слоя (перед softmax)
         feature_extractor = tf.keras.models.Model(
-            inputs=final_model.input, outputs=final_model.layers[-3].output
+            inputs=final_model.input,
+            outputs=final_model.get_layer("embedding_layer").output
         )
         X_test_features = feature_extractor.predict(X_test)
-        X_test_features = np.squeeze(X_test_features, axis=1)  # Убираем лишнюю ось, чтобы получить форму (n_samples, feature_dim)
+        X_test_features = np.squeeze(X_test_features, axis=1)  # если нужно убрать лишнюю ось
+
 
         # Обучаем XGBoost на эмбеддингах; передаем X_test_features и y_test как eval_set
         xgb_model = self.train_xgboost(X_test_features, y_test, X_val=X_test_features, y_val=y_test)
