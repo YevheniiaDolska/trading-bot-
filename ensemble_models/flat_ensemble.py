@@ -518,6 +518,7 @@ def get_historical_data(symbols, flat_periods, interval="1m", save_path="/worksp
     :param save_path: путь к файлу для сохранения CSV (по умолчанию 'binance_data_flat.csv')
     """
     base_url_monthly = "https://data.binance.vision/data/spot/monthly/klines"
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     
     all_data = []
