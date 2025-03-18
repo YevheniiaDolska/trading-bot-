@@ -44,6 +44,7 @@ import tensorflow.keras.backend as K
 from sklearn.model_selection import StratifiedKFold
 from sklearn.dummy import DummyClassifier
 from scipy.stats import zscore
+from scipy.stats import mode
 
 
 
@@ -893,12 +894,11 @@ class MarketClassifier:
         xgb_model = self.train_xgboost(X_test_features, y_test, X_val=X_test_features, y_val=y_test)
 
         # Оценка финальной модели
-        y_pred_lstm_gru = final_model.predict(X_test)
-        y_pred_xgb = xgb_model.predict_proba(X_test_features)
+        y_pred_lstm_gru = np.argmax(final_model.predict(X_test), axis=1)
+        y_pred_xgb = np.argmax(xgb_model.predict_proba(X_test_features), axis=1)
 
         # Ансамбль голосованием: средневзвешенное
-        y_pred_classes = np.argmax(y_pred_lstm_gru, axis=1) * 0.5 + y_pred_xgb * 0.5
-        y_pred_classes = np.round(y_pred_classes).astype(int)
+        y_pred_ensemble = mode(np.vstack([y_pred_lstm_gru, y_pred_xgb]), axis=0)[0].flatten()
 
         accuracy = accuracy_score(y_test, y_pred_classes)
         precision = precision_score(y_test, y_pred_classes, average='weighted')
