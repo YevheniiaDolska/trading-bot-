@@ -1326,7 +1326,6 @@ def train_ensemble_model(data, selected_features, model_filename='flat_stacked_e
         X_resampled_scaled,
         y_resampled,
         eval_set=[(X_test_scaled, y_test)],
-        early_stopping_rounds=20
     )
 
     meta_model = grid_search.best_estimator_
