@@ -38,7 +38,7 @@ from datetime import datetime
 import joblib, glob, shutil, logging, dill, time
 from datetime import datetime
 from utils_output import ensure_directory, copy_output, save_model_output
-from sklearn.linear_model import LogisticRegressionCV
+from sklearn.linear_model import LogisticRegression
 
   
 
@@ -1474,15 +1474,15 @@ def train_ensemble_model(data, selected_features, model_filename='models/bearish
             logging.info(f"[{name}] Feature importances: {model.feature_importances_}")
     
     # 12. Обучение мета-модели через GridSearchCV
-    meta_model = LogisticRegressionCV(
-        Cs=[0.01, 0.08, 0.1],
+    meta_model = LogisticRegression(
+        Cs=[0.01, 0.08, 0.1],  # если хотите перебирать гиперпараметры, можно использовать GridSearchCV с LogisticRegression
         penalty='l2',
-        cv=2,
         max_iter=30000,
         tol=1e-8,
         solver='saga',
         multi_class='multinomial',
-        n_iter_no_change=20,
+        early_stopping=True,
+        validation_fraction=0.1,
         random_state=42
     )
 
