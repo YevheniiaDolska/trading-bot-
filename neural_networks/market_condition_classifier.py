@@ -795,7 +795,7 @@ class MarketClassifier:
             return dummy
         else:
             booster = xgb.XGBClassifier(
-                objective='multi:softmax',
+                objective='multi:softprob',
                 num_class=3,
                 learning_rate=0.1,
                 n_estimators=10,
