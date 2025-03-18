@@ -894,7 +894,7 @@ class MarketClassifier:
 
         # Оценка финальной модели
         y_pred_lstm_gru = final_model.predict(X_test)
-        y_pred_xgb = xgb_model.predict(X_test_features)
+        y_pred_xgb = xgb_model.predict_proba(X_test_features)
 
         # Ансамбль голосованием: средневзвешенное
         y_pred_classes = np.argmax(y_pred_lstm_gru, axis=1) * 0.5 + y_pred_xgb * 0.5
