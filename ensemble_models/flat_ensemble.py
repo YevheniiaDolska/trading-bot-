@@ -34,6 +34,8 @@ from threading import Lock
 import time
 from sklearn.model_selection import GridSearchCV
 from utils_output import ensure_directory, copy_output, save_model_output
+from sklearn.linear_model import LogisticRegressionCV
+
 
 
 # Создаем необходимые директории

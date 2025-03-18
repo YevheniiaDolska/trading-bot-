@@ -38,6 +38,8 @@ from datetime import datetime
 import joblib, glob, shutil, logging, dill, time
 from datetime import datetime
 from utils_output import ensure_directory, copy_output, save_model_output
+from sklearn.linear_model import LogisticRegressionCV
+
   
 
 # Создаем необходимые директории
