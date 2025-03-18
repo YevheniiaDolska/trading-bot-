@@ -60,6 +60,8 @@ checkpoint_base_dir = os.path.join("/workspace/checkpoints/bearish", market_type
 ensemble_checkpoint_path = os.path.join(checkpoint_base_dir, f"{market_type}_ensemble_checkpoint.pkl")
 
 
+os.makedirs("/workspace/logs", exist_ok=True)
+
 def initialize_strategy():
     """
     Инициализирует стратегию для GPU, если они доступны.
