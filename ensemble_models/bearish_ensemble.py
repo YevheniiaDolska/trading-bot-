@@ -1474,8 +1474,8 @@ def train_ensemble_model(data, selected_features, model_filename='models/bearish
             logging.info(f"[{name}] Feature importances: {model.feature_importances_}")
     
     # 12. Обучение мета-модели через GridSearchCV
-    meta_model = LogisticRegression(
-        Cs=[0.01, 0.08, 0.1],  # если хотите перебирать гиперпараметры, можно использовать GridSearchCV с LogisticRegression
+    # Определяем базовую модель с ранней остановкой
+    base_lr = LogisticRegression(
         penalty='l2',
         max_iter=30000,
         tol=1e-8,
@@ -1486,6 +1486,9 @@ def train_ensemble_model(data, selected_features, model_filename='models/bearish
         random_state=42
     )
 
+    # Настраиваем перебор гиперпараметров через GridSearchCV, если необходимо
+    param_grid = {'C': [0.01, 0.08, 0.1]}
+    meta_model = GridSearchCV(base_lr, param_grid, cv=2, scoring='f1_weighted', n_jobs=1)
     meta_model.fit(X_resampled_scaled, y_resampled2)
     
     # 13. Удаление старых чекпоинтов базовых моделей
