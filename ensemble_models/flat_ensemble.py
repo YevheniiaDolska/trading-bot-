@@ -1293,11 +1293,13 @@ def train_ensemble_model(data, selected_features, model_filename='flat_stacked_e
         checkpoint_path = get_checkpoint_path(name, market_type)
         final_checkpoint = os.path.join(checkpoint_path, f"{name}_final.joblib")
         logging.info(f"[Ensemble] Обучение модели {name}")
-        if name in ['xgb', 'lgbm', 'catboost']:
-            # Передаем eval_set и early_stopping_rounds для моделей, поддерживающих раннюю остановку
+        if name in ['xgb', 'catboost']:
             model.fit(X_resampled_scaled, y_resampled, eval_set=[(X_test_scaled, y_test)], early_stopping_rounds=20)
+        elif name == 'lgbm':
+            model.fit(X_resampled_scaled, y_resampled, eval_set=[(X_test_scaled, y_test)])
         else:
             model.fit(X_resampled_scaled, y_resampled)
+
         joblib.dump(model, final_checkpoint)
         logging.info(f"[Ensemble] Модель {name} сохранена в {final_checkpoint}")
 
