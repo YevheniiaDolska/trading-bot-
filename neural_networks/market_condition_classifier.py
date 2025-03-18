@@ -898,11 +898,30 @@ class MarketClassifier:
         xgb_model = self.train_xgboost(X_test_features, y_test, X_val=X_test_features, y_val=y_test)
 
         # Оценка финальной модели
-        y_pred_lstm_gru = np.argmax(final_model.predict(X_test), axis=1)
-        y_pred_xgb = np.argmax(xgb_model.predict_proba(X_test_features), axis=1)
+        # Получаем предсказания от модели LSTM+GRU
+        y_pred_nn_probs = final_model.predict(X_test)
+        # Если выход имеет лишнюю размерность (например, (N, 1, 3)), удаляем её:
+        if y_pred_nn_probs.ndim == 3:
+            y_pred_nn_probs = np.squeeze(y_pred_nn_probs, axis=1)
+        # Преобразуем вероятности в классы:
+        y_pred_nn = np.argmax(y_pred_nn_probs, axis=1)
 
-        # Ансамбль голосованием: средневзвешенное
-        y_pred_ensemble = mode(np.vstack([y_pred_lstm_gru, y_pred_xgb]), axis=0)[0].flatten()
+        # Получаем эмбеддинги с помощью feature_extractor
+        X_test_features = feature_extractor.predict(X_test)
+        # Если эмбеддинги имеют лишнюю размерность (например, (N, 1, d)), удаляем её:
+        if X_test_features.ndim == 3:
+            X_test_features = np.squeeze(X_test_features, axis=1)
+
+        # Получаем предсказания от XGBoost
+        y_pred_xgb_probs = xgb_model.predict_proba(X_test_features)
+        y_pred_xgb = np.argmax(y_pred_xgb_probs, axis=1)
+
+        # Проверяем, что оба предсказания имеют одинаковое число примеров
+        assert y_pred_nn.shape[0] == y_pred_xgb.shape[0], f"Mismatch: {y_pred_nn.shape[0]} vs {y_pred_xgb.shape[0]}"
+
+        # Объединяем предсказания (например, голосованием через mode)
+        y_pred_ensemble = mode(np.vstack([y_pred_nn, y_pred_xgb]), axis=0)[0].flatten()
+
 
         accuracy = accuracy_score(y_test, y_pred_classes)
         precision = precision_score(y_test, y_pred_classes, average='weighted')
