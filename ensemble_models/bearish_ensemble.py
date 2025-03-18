@@ -40,6 +40,8 @@ from datetime import datetime
 from utils_output import ensure_directory, copy_output, save_model_output
   
 
+os.makedirs("/workspace/logs", exist_ok=True)
+
 # Логирование
 logging.basicConfig(
     level=logging.INFO,
@@ -49,6 +51,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)  # Вывод в консоль с поддержкой юникода
     ]
 )
+
 
 # Имя файла для сохранения модели
 market_type = "bearish"
@@ -60,7 +63,6 @@ checkpoint_base_dir = os.path.join("/workspace/checkpoints/bearish", market_type
 ensemble_checkpoint_path = os.path.join(checkpoint_base_dir, f"{market_type}_ensemble_checkpoint.pkl")
 
 
-os.makedirs("/workspace/logs", exist_ok=True)
 
 def initialize_strategy():
     """

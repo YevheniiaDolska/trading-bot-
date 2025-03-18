@@ -35,6 +35,7 @@ import time
 from sklearn.model_selection import GridSearchCV
 from utils_output import ensure_directory, copy_output, save_model_output
 
+os.makedirs("/workspace/logs", exist_ok=True)
 
 # Логирование
 logging.basicConfig(
@@ -1488,7 +1489,7 @@ def train_ensemble_model(data, selected_features, model_filename='bullish_stacke
 
     # Извлекаем лучшего кандидата
     meta_model = grid_search.best_estimator_
-        logging.info(f"Лучшие гиперпараметры мета-модели: {grid_search.best_params_}")
+    logging.info(f"Лучшие гиперпараметры мета-модели: {grid_search.best_params_}")
     # ------------------------------------------------------------------
 
     # Удаляем старые чекпоинты для базовых моделей
