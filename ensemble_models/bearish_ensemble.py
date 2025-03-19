@@ -903,51 +903,44 @@ def extract_features(data):
     # Вычисляем будущие возвраты (сдвиг на -1)
     future_return = data['close'].pct_change(fill_method=None).shift(-1)
 
-    # Задаём начальные параметры
-    window = 50           # окно для расчёта скользящей статистики (используем 50 предыдущих периодов)
-    alpha = 1.2           # начальный множитель для нижнего порога (Sell)
-    beta = 1.2            # начальный множитель для верхнего порога (Buy)
+    # Параметры для динамических порогов (без утечки – статистика считается только по прошлым данным)
+    window = 50    # используем предыдущие 50 периодов
+    alpha = 1.2    # множитель для нижнего порога (Sell)
+    beta = 1.2     # множитель для верхнего порога (Buy)
 
-    # Для предотвращения утечки данных рассчитываем статистику только по предыдущим значениям
+    # Расчёт скользящей средней и стандартного отклонения future_return с использованием только прошлых данных
     mean_return = future_return.shift(1).rolling(window=window, min_periods=1).mean()
     std_return = future_return.shift(1).rolling(window=window, min_periods=1).std()
 
-    # Попытка адаптивного порогового разделения
-    max_iter = 10         # максимальное число итераций для адаптации
-    iteration = 0
-
-    while iteration < max_iter:
-        data['target'] = np.where(
-            future_return < mean_return - alpha * std_return,
-            1,  # Sell
-            np.where(
-                future_return > mean_return + beta * std_return,
-                2,  # Buy
-                0   # Hold
-            )
+    # Первичное распределение сигналов на основе динамических порогов
+    data['target'] = np.where(
+        future_return < mean_return - alpha * std_return,
+        1,  # Sell
+        np.where(
+            future_return > mean_return + beta * std_return,
+            2,  # Buy
+            0   # Hold
         )
-        # Если распределение имеет хотя бы 3 уникальных класса, выходим из цикла
-        if data['target'].nunique() >= 3:
-            break
-        # Иначе ослабляем пороги, чтобы расширить диапазон сигналов
-        alpha *= 0.9
-        beta *= 0.9
-        iteration += 1
+    )
 
-    # Если после адаптации остаётся менее трёх классов, используем резервное квантильное разбиение
+    # Проверяем, получили ли мы хотя бы по одному примеру для каждого из классов (0, 1, 2)
     if data['target'].nunique() < 3:
-        lower_quantile = future_return.quantile(0.33)
-        upper_quantile = future_return.quantile(0.66)
-        data['target'] = np.where(
-            future_return <= lower_quantile,
-            1,  # Sell
-            np.where(
-                future_return >= upper_quantile,
-                2,  # Buy
-                0   # Hold
-            )
-        )
-
+        # Если нет – применяем форсированное квантильное распределение по рангу, чтобы гарантировать три класса.
+        # Это делается без утечки, поскольку порядок future_return используется только для сортировки текущих наблюдений.
+        sorted_idx = np.argsort(future_return.values)
+        n = len(sorted_idx)
+        sell_cut = int(0.2 * n)  # нижние 20%
+        buy_cut = int(0.8 * n)   # верхние 20%
+        
+        # Создаём новый вектор меток: нижние 20% — Sell (1), верхние 20% — Buy (2), остальные — Hold (0)
+        new_target = np.zeros(n, dtype=int)
+        new_target[:sell_cut] = 1
+        new_target[buy_cut:] = 2
+        
+        # Восстанавливаем исходный порядок: элементы, отсортированные по future_return, возвращаем на свои места
+        fallback_target = np.empty(n, dtype=int)
+        fallback_target[sorted_idx] = new_target
+        data['target'] = fallback_target
 
     
     # 4. Дополнительные базовые признаки
