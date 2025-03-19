@@ -1077,35 +1077,29 @@ def parallel_smote(X, y, n_chunks=4):
 
     return X_resampled, y_resampled
 
-def ensure_datetime_index(data):
+
+def ensure_datetime_index(data: pd.DataFrame) -> pd.DataFrame:
     """
-    Гарантирует, что DataFrame имеет DatetimeIndex и колонку 'timestamp'.
-    Если колонка 'timestamp' отсутствует, функция проверяет, является ли индекс уже DatetimeIndex.
-    Если индекс не является DatetimeIndex, пытается преобразовать его в datetime.
-    Если преобразование не удалось – выбрасывается ValueError.
+    Гарантирует, что DataFrame имеет DatetimeIndex и столбец 'timestamp'.
+    Если столбец 'timestamp' отсутствует, пытается преобразовать индекс в datetime.
+    Если преобразование возможно, устанавливает его в качестве индекса и добавляет столбец 'timestamp'.
+    Если преобразование не удалось, выбрасывает ValueError.
     """
     if 'timestamp' in data.columns:
-        # Если колонка уже есть, попробуем её привести к datetime и установить как индекс.
-        try:
-            data['timestamp'] = pd.to_datetime(data['timestamp'], errors='coerce')
-            data = data.dropna(subset=['timestamp'])
-            data = data.set_index('timestamp')
-            logging.info("Колонка 'timestamp' успешно приведена к datetime и установлена как индекс.")
-        except Exception as e:
-            raise ValueError("Не удалось преобразовать колонку 'timestamp' в DatetimeIndex.") from e
+        # Преобразуем столбец 'timestamp' и устанавливаем его как индекс
+        data['timestamp'] = pd.to_datetime(data['timestamp'], errors='coerce')
+        data = data.dropna(subset=['timestamp'])
+        data = data.set_index('timestamp')
     else:
-        # Если колонки нет, проверяем индекс
-        if not isinstance(data.index, pd.DatetimeIndex):
-            try:
-                new_index = pd.to_datetime(data.index, errors='coerce')
-                if new_index.isnull().all():
-                    raise ValueError("Индекс не удалось преобразовать в DatetimeIndex.")
-                data.index = new_index
-                data['timestamp'] = new_index
-                logging.info("Индекс успешно преобразован в DatetimeIndex и добавлен как колонка 'timestamp'.")
-            except Exception as e:
-                raise ValueError("Данные не содержат временного индекса или колонки 'timestamp'.") from e
+        # Преобразуем существующий индекс в datetime
+        new_index = pd.to_datetime(data.index, errors='coerce')
+        if new_index.isnull().all():
+            raise ValueError("Невозможно преобразовать индекс в DatetimeIndex, т.к. все значения не распознаны.")
+        data.index = new_index
+        # Если столбца 'timestamp' нет, создаём его на основе индекса
+        data['timestamp'] = data.index
     return data
+
 
 
 
@@ -1582,6 +1576,9 @@ if __name__ == "__main__":
 
     # Объединяем все DataFrame в один
     data = pd.concat(data_dict.values(), ignore_index=False)
+    
+    # Гарантируем, что DataFrame имеет DatetimeIndex и столбец 'timestamp'
+    data = ensure_datetime_index(data)
 
     # Проверяем наличие 'timestamp'
     if 'timestamp' not in data.columns:
