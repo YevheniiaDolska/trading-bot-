@@ -138,7 +138,7 @@ def calculate_cross_coin_features(data_dict):
             btc_data['close'].pct_change().rolling(30).var())
         
         # Опережение/следование за BTC
-        df['lead_lag_btc'] = df['close'].pct_change().shift(-1).rolling(10).corr(
+        df['lead_lag_btc'] = df['close'].pct_change().shift(1).rolling(10).corr(
             btc_data['close'].pct_change())
             
         data_dict[symbol] = df

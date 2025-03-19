@@ -113,7 +113,7 @@ def calculate_cross_coin_features(data_dict):
         df['rel_strength_btc'] = df['close'].pct_change() - btc_data['close'].pct_change()
         df['beta_btc'] = df['close'].pct_change().rolling(30).cov(btc_data['close'].pct_change()) / \
                          btc_data['close'].pct_change().rolling(30).var()
-        df['lead_lag_btc'] = df['close'].pct_change().shift(-1).rolling(10).corr(btc_data['close'].pct_change())
+        df['lead_lag_btc'] = df['close'].pct_change().shift(1).rolling(10).corr(btc_data['close'].pct_change())
         data_dict[symbol] = df
     return data_dict
 
