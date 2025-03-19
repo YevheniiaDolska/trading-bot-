@@ -903,29 +903,51 @@ def extract_features(data):
     # Вычисляем будущие возвраты (сдвиг на -1)
     future_return = data['close'].pct_change(fill_method=None).shift(-1)
 
-    # Параметры, подобранные на основе backtesting для медвежьего рынка
-    window = 50   # Используем предыдущие 50 периодов для расчёта статистики
-    alpha = 1.2   # Множитель для нижнего порога (Sell)
-    beta = 1.2    # Множитель для верхнего порога (Buy)
+    # Задаём начальные параметры
+    window = 50           # окно для расчёта скользящей статистики (используем 50 предыдущих периодов)
+    alpha = 1.2           # начальный множитель для нижнего порога (Sell)
+    beta = 1.2            # начальный множитель для верхнего порога (Buy)
 
-    # Для предотвращения утечки данных – используем только исторические данные:
-    # Сдвигаем future_return на 1, чтобы в расчёте среднего и std не попадала текущая доходность
+    # Для предотвращения утечки данных рассчитываем статистику только по предыдущим значениям
     mean_return = future_return.shift(1).rolling(window=window, min_periods=1).mean()
     std_return = future_return.shift(1).rolling(window=window, min_periods=1).std()
 
-    # Назначаем сигналы:
-    #   1 (Sell) – если future_return < (mean_return - alpha * std_return)
-    #   2 (Buy)  – если future_return > (mean_return + beta * std_return)
-    #   0 (Hold) – иначе
-    data['target'] = np.where(
-        future_return < mean_return - alpha * std_return,
-        1,
-        np.where(
-            future_return > mean_return + beta * std_return,
-            2,
-            0
+    # Попытка адаптивного порогового разделения
+    max_iter = 10         # максимальное число итераций для адаптации
+    iteration = 0
+
+    while iteration < max_iter:
+        data['target'] = np.where(
+            future_return < mean_return - alpha * std_return,
+            1,  # Sell
+            np.where(
+                future_return > mean_return + beta * std_return,
+                2,  # Buy
+                0   # Hold
+            )
         )
-    )
+        # Если распределение имеет хотя бы 3 уникальных класса, выходим из цикла
+        if data['target'].nunique() >= 3:
+            break
+        # Иначе ослабляем пороги, чтобы расширить диапазон сигналов
+        alpha *= 0.9
+        beta *= 0.9
+        iteration += 1
+
+    # Если после адаптации остаётся менее трёх классов, используем резервное квантильное разбиение
+    if data['target'].nunique() < 3:
+        lower_quantile = future_return.quantile(0.33)
+        upper_quantile = future_return.quantile(0.66)
+        data['target'] = np.where(
+            future_return <= lower_quantile,
+            1,  # Sell
+            np.where(
+                future_return >= upper_quantile,
+                2,  # Buy
+                0   # Hold
+            )
+        )
+
 
     
     # 4. Дополнительные базовые признаки
