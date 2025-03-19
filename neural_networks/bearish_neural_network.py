@@ -57,6 +57,24 @@ required_dirs = [
 for directory in required_dirs:
     os.makedirs(directory, exist_ok=True)
     
+    
+# Универсальная функция для чанкования DataFrame
+def apply_in_chunks(df, func, chunk_size=100000):
+    """
+    Применяет функцию func к DataFrame df по чанкам заданного размера.
+    Если df не является DataFrame, возвращает func(df).
+    """
+    import pandas as pd
+    if not isinstance(df, pd.DataFrame):
+        return func(df)
+    # Если датасет меньше одного чанка, сразу возвращаем результат
+    if len(df) <= chunk_size:
+        return func(df)
+    chunks = [df.iloc[i:i+chunk_size] for i in range(0, len(df), chunk_size)]
+    processed_chunks = [func(chunk) for chunk in chunks]
+    return pd.concat(processed_chunks)
+
+    
 
 def initialize_strategy():
     """
@@ -901,17 +919,15 @@ def prepare_data(data):
         else:
             raise ValueError("Данные не содержат временного индекса или колонки 'timestamp'.")
     
-    # Извлечение признаков
-    data = extract_features(data)
-    logging.info(f"После извлечения признаков: {data.shape}")
-    
-    # Удаление выбросов
-    data = remove_outliers(data)
-    logging.info(f"После удаления выбросов: {data.shape}")
-    
-    # Добавление кластеризационного признака
-    data = add_clustering_feature(data)
-    logging.info(f"После кластеризации: {data.shape}")
+    def process_chunk(df_chunk):
+        df_chunk = extract_features(df_chunk)
+        df_chunk = remove_outliers(df_chunk)
+        df_chunk = add_clustering_feature(df_chunk)
+        return df_chunk
+
+    # Применяем обработку по чанкам, если датасет очень большой
+    data = apply_in_chunks(data, process_chunk, chunk_size=100000)
+    logging.info(f"После обработки (извлечение признаков, удаление выбросов, кластеризация): {data.shape}")
     
     # Список признаков - ИСКЛЮЧАЕМ timestamp и другие нечисловые колонки
     features = [col for col in data.columns if col not in ['target', 'timestamp'] and pd.api.types.is_numeric_dtype(data[col])]

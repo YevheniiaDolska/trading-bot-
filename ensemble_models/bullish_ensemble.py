@@ -60,6 +60,23 @@ logging.basicConfig(
 )
 
 
+# Универсальная функция для чанкования DataFrame
+def apply_in_chunks(df, func, chunk_size=100000):
+    """
+    Применяет функцию func к DataFrame df по чанкам заданного размера.
+    Если df не является DataFrame, возвращает func(df).
+    """
+    import pandas as pd
+    if not isinstance(df, pd.DataFrame):
+        return func(df)
+    # Если датасет меньше одного чанка, сразу возвращаем результат
+    if len(df) <= chunk_size:
+        return func(df)
+    chunks = [df.iloc[i:i+chunk_size] for i in range(0, len(df), chunk_size)]
+    processed_chunks = [func(chunk) for chunk in chunks]
+    return pd.concat(processed_chunks)
+
+
 # Имя файла для сохранения модели
 market_type = "bullish"
 
@@ -894,22 +911,22 @@ def extract_features(data):
     
     # 12. Многоуровневая целевая переменная для бычьего рынка
     data['target'] = np.where(
-        # Сильный сигнал: разворот вверх после коррекции
-        (data['returns'].shift(-1) > 0.001) & 
-        (data['close'] < data['sma_10']) &  # Цена ниже 10-периодной SMA
-        (volume_ratio > 1.2) & 
-        (data['rsi_5'] < 40),  # Перепроданность на RSI
+        # Сильный сигнал (Buy)
+        (data['returns'].shift(-1) > 0.0005) &    # вместо 0.001
+        (data['close'] < data['sma_10']) &
+        (volume_ratio > 1.1) &                   # вместо 1.2
+        (data['rsi_5'] < 45),                    # вместо 40
         2,
         np.where(
-            # Умеренный сигнал: локальный отскок
-            (data['returns'].shift(-1) > 0.0005) & 
-            (data['micro_trend_strength'] < 0) &  # Предшествующее падение
-            (data['volume_trend_conf'] > 0),  # Подтверждение объемом
+            # Умеренный сигнал (Buy)
+            (data['returns'].shift(-1) > 0.0002) &    # вместо 0.0005
+            (data['micro_trend_strength'] < 0) &
+            (data['volume_trend_conf'] > -0.5),       # смягчённый фильтр
             1,
             0
         )
     )
-    
+
     return data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
 
@@ -1118,42 +1135,36 @@ def prepare_data(data):
     logging.info(f"Исходная форма данных: {data.shape}")
 
     # Убедимся, что временной индекс установлен
-    logging.info(f"Исходная форма данных: {data.shape}")
     data = ensure_datetime_index(data)
+    logging.info("Временной индекс установлен и, при необходимости, добавлен как колонка 'timestamp'.")
 
+    # Если данные по нескольким монетам, их межмонетные признаки можно добавить до чанкования,
+    # если функция preprocess_market_data используется, можно вызвать её, но в данном примере
+    # для данных в виде одного DataFrame применяем предобработку по чанкам.
     
-    # Предобработка данных для нескольких монет
-    if isinstance(data, dict):
-        
-        data = preprocess_market_data(data)  # Это комплексная предобработка, которая уже включает в себя все нужные функции
-        if isinstance(data, dict):
-            data = pd.concat(data.values())
-            
-    else:
-        
-        # Если данные в виде одного DataFrame, применяем предобработку последовательно
-        data = detect_anomalies(data)
-        logging.info("Аномалии обнаружены и помечены")
-        
-        data = validate_volume_confirmation_bullish(data)  # Используем специальную версию для бычьего рынка
-        logging.info("Добавлены признаки подтверждения объемом для бычьего рынка")
-        
-        data = remove_noise(data)
-        logging.info("Шум отфильтрован")
+    # Определяем функцию для обработки одного чанка
+    def process_chunk(df_chunk):
+        df_chunk = detect_anomalies(df_chunk)
+        logging.info("Аномалии обнаружены в чанке")
+        df_chunk = validate_volume_confirmation_bullish(df_chunk)
+        logging.info("Добавлены признаки подтверждения объемом для чанка")
+        df_chunk = remove_noise(df_chunk)
+        logging.info("Шум отфильтрован в чанке")
+        df_chunk = extract_features(df_chunk)
+        logging.info("Признаки извлечены в чанке")
+        df_chunk = remove_outliers(df_chunk)
+        logging.info("Выбросы удалены в чанке")
+        return df_chunk
 
-    # Извлечение признаков
-    data = extract_features(data)
-    logging.info(f"После извлечения признаков: {data.shape}")
+    # Применяем обработку по чанкам с размером 100000 строк (при необходимости можно изменить)
+    data = apply_in_chunks(data, process_chunk, chunk_size=100000)
+    logging.info(f"После обработки по чанкам: {data.shape}")
 
-    # Удаление выбросов
-    data = remove_outliers(data)
-    logging.info(f"После удаления выбросов: {data.shape}")
-
-    # Добавление кластеризационного признака
+    # Применяем кластеризацию на объединённом датасете (кластеризация требует глобального контекста)
     data = add_clustering_feature(data)
     logging.info(f"После кластеризации: {data.shape}")
 
-    # Список признаков
+    # Формируем список признаков (исключая 'target' и служебные колонки)
     features = [col for col in data.columns if col not in ['target', 'symbol', 'close_time', 'ignore']]
     logging.info(f"Количество признаков: {len(features)}")
     logging.info(f"Список признаков: {features}")

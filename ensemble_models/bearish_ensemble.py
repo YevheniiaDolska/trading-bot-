@@ -64,6 +64,22 @@ logging.basicConfig(
     ]
 )
 
+# Универсальная функция для чанкования DataFrame
+def apply_in_chunks(df, func, chunk_size=100000):
+    """
+    Применяет функцию func к DataFrame df по чанкам заданного размера.
+    Если df не является DataFrame, возвращает func(df).
+    """
+    import pandas as pd
+    if not isinstance(df, pd.DataFrame):
+        return func(df)
+    # Если датасет меньше одного чанка, сразу возвращаем результат
+    if len(df) <= chunk_size:
+        return func(df)
+    chunks = [df.iloc[i:i+chunk_size] for i in range(0, len(df), chunk_size)]
+    processed_chunks = [func(chunk) for chunk in chunks]
+    return pd.concat(processed_chunks)
+
 
 # Имя файла для сохранения модели
 market_type = "bearish"
@@ -942,7 +958,34 @@ def extract_features(data):
     # Порог для "BUY"
     pos_threshold = 0.0005
     
-    data['target'] = triple_barrier_label(data['close'], T=5, window=50, k=1.0)
+    #data['target'] = triple_barrier_label(data['close'], T=5, window=50, k=1.0)
+    
+    # Многоуровневая целевая переменная для медвежьего рынка
+    # Предполагается, что:
+    # - target = 2: сильный сигнал для короткой позиции (продолжение нисходящего движения)
+    # - target = 1: умеренный сигнал для коррекции (возможный локальный отскок, который всё же не отменяет медвежий тренд)
+    # - target = 0: отсутствие явного сигнала (Hold)
+
+    data['target'] = np.where(
+        # Сильный сигнал (target = 2): ожидается значительное снижение
+        (data['returns'].shift(-1) < -0.0005) &   # снижено с -0.001 до -0.0005
+        (data['close'] > data['sma_10']) &          # цена всё ещё выше 10-периодной SMA
+        (volume_ratio > 1.1) &                      # снижено с 1.2 до 1.1
+        (data['rsi_5'] > 55),                       # снижено с 60 до 55
+        2,
+        np.where(
+            # Умеренный сигнал (target = 1): ожидается умеренное снижение после кратковременного отскока
+            (data['returns'].shift(-1) < -0.0003) &   # снижено с -0.0005 до -0.0003
+            (data['micro_trend_strength'] > 0) &       # признак локального отскока (может указывать на момент коррекции)
+            (data['volume_trend_conf'] < 0),            # подтверждение объёмом нисходящего движения
+            1,
+            0
+        )
+    )
+
+    # Замена бесконечностей и заполнение пропусков
+    data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+
 
 
     
@@ -1151,7 +1194,6 @@ def parallel_smote(X, y, n_chunks=4):
     return X_resampled, y_resampled
 
 
-# Подготовка данных для модели
 def prepare_data(data):
     logging.info("Начало подготовки данных")
 
@@ -1179,31 +1221,27 @@ def prepare_data(data):
         except Exception as e:
             raise ValueError("Данные не содержат временного индекса или колонки 'timestamp'.") from e
 
-    # Предобработка: аномалии, объем, шум и т.д.
-    data = detect_anomalies(data)
-    logging.info("Аномалии обнаружены и помечены")
-    
-    data = validate_volume_confirmation(data)
-    logging.info("Добавлены признаки подтверждения объемом")
-    
-    data = remove_noise(data)
-    logging.info("Шум отфильтрован")
-    
-    # Если данные по нескольким монетам – добавляем межмонетные признаки (если передали словарь)
-    if isinstance(data, dict):
-        data = calculate_cross_coin_features(data)
-        logging.info("Добавлены межмонетные признаки")
-    
-    data = extract_features(data)
+    # Если данные по нескольким монетам, их межмонетные признаки можно добавить до чанкования
+    # (если изначально data был dict, он уже сконкатенирован)
+    # Здесь можно вызвать calculate_cross_coin_features(data) при необходимости.
+
+    # Применяем предобработку по чанкам:
+    def process_chunk(df_chunk):
+         df_chunk = detect_anomalies(df_chunk)
+         df_chunk = validate_volume_confirmation(df_chunk)
+         df_chunk = remove_noise(df_chunk)
+         df_chunk = extract_features(df_chunk)
+         return df_chunk
+
+    data = apply_in_chunks(data, process_chunk, chunk_size=100000)
     logging.info(f"После извлечения признаков: {data.shape}")
 
     # Теперь отделяем признаки от целевой переменной
-    # Сначала удаляем не нужные столбцы (например, 'symbol', 'close_time', 'ignore')
     drop_cols = ['symbol', 'close_time', 'ignore']
     X = data.drop(columns=drop_cols + ['target'], errors='ignore')
     y = data['target']
     
-    # Важно: оставляем только числовые признаки (убираем datetime, если он остался)
+    # Оставляем только числовые признаки (убираем datetime, если он остался)
     X = X.select_dtypes(include=[np.number])
     
     X, y = clean_data(X, y)
@@ -1230,6 +1268,7 @@ def prepare_data(data):
     logging.info(f"Распределение target:\n{resampled_data['target'].value_counts()}")
     
     return resampled_data, features
+
 
 
 def get_checkpoint_path(model_name, market_type):

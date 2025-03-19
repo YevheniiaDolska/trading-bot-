@@ -61,6 +61,24 @@ logging.basicConfig(
 )
 
 
+
+# Универсальная функция для чанкования DataFrame
+def apply_in_chunks(df, func, chunk_size=100000):
+    """
+    Применяет функцию func к DataFrame df по чанкам заданного размера.
+    Если df не является DataFrame, возвращает func(df).
+    """
+    import pandas as pd
+    if not isinstance(df, pd.DataFrame):
+        return func(df)
+    # Если датасет меньше одного чанка, сразу возвращаем результат
+    if len(df) <= chunk_size:
+        return func(df)
+    chunks = [df.iloc[i:i+chunk_size] for i in range(0, len(df), chunk_size)]
+    processed_chunks = [func(chunk) for chunk in chunks]
+    return pd.concat(processed_chunks)
+
+
 # Имя файла для сохранения модели
 market_type = "flat"
 
@@ -963,12 +981,14 @@ def ensure_datetime_index(data):
     return data
 
 
-
 # Подготовка данных для модели
 def prepare_data(data):
     logging.info("Начало подготовки данных для флэтового рынка")
+    
     if data.empty:
         raise ValueError("Входные данные пусты")
+    
+    # Приведение индекса к DatetimeIndex
     if not isinstance(data.index, pd.DatetimeIndex):
         if 'timestamp' in data.columns:
             data['timestamp'] = pd.to_datetime(data['timestamp'], errors='coerce')
@@ -976,12 +996,19 @@ def prepare_data(data):
         else:
             raise ValueError("Нет временного индекса или колонки 'timestamp'")
     
-    data = detect_anomalies(data)
-    data = validate_volume_confirmation(data)
-    data = remove_noise(data)
-    data = extract_features(data)
-    data = remove_outliers(data)
-    data = add_clustering_feature(data)
+    # Определяем функцию обработки одного чанка
+    def process_chunk(df_chunk):
+        df_chunk = detect_anomalies(df_chunk)
+        df_chunk = validate_volume_confirmation(df_chunk)
+        df_chunk = remove_noise(df_chunk)
+        df_chunk = extract_features(df_chunk)
+        df_chunk = remove_outliers(df_chunk)
+        df_chunk = add_clustering_feature(df_chunk)
+        return df_chunk
+
+    # Применяем обработку по чанкам
+    data = apply_in_chunks(data, process_chunk, chunk_size=100000)
+    logging.info(f"После обработки по чанкам: {data.shape}")
     
     # Выбираем только числовые признаки, исключая ненужные колонки
     features = [col for col in data.columns if col not in ['target', 'symbol', 'close_time', 'ignore']
@@ -990,7 +1017,9 @@ def prepare_data(data):
     logging.info(f"Количество признаков: {len(features)}")
     logging.info(f"Список признаков: {features}")
     logging.info(f"Распределение target:\n{data['target'].value_counts()}")
+    
     return data, features
+
 
 
 def update_model_if_new_data(ensemble_model, selected_features, model_filename, new_data_available, updated_data):
