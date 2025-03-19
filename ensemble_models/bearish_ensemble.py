@@ -903,19 +903,25 @@ def extract_features(data):
     # Вычисляем будущие возвраты (сдвиг на -1)
     future_return = data['close'].pct_change(fill_method=None).shift(-1)
 
-    # Определяем нижний и верхний квантиль (33% и 66%)
-    lower_quantile = future_return.quantile(0.33)
-    upper_quantile = future_return.quantile(0.66)
+    # Параметры, подобранные на основе backtesting для медвежьего рынка
+    window = 50   # Используем предыдущие 50 периодов для расчёта статистики
+    alpha = 1.2   # Множитель для нижнего порога (Sell)
+    beta = 1.2    # Множитель для верхнего порога (Buy)
 
-    # Назначаем метки:
-    #   1 — Sell, если future_return ниже нижнего квантиля,
-    #   2 — Buy, если future_return выше верхнего квантиля,
-    #   0 — Hold, для остальных случаев.
+    # Для предотвращения утечки данных – используем только исторические данные:
+    # Сдвигаем future_return на 1, чтобы в расчёте среднего и std не попадала текущая доходность
+    mean_return = future_return.shift(1).rolling(window=window, min_periods=1).mean()
+    std_return = future_return.shift(1).rolling(window=window, min_periods=1).std()
+
+    # Назначаем сигналы:
+    #   1 (Sell) – если future_return < (mean_return - alpha * std_return)
+    #   2 (Buy)  – если future_return > (mean_return + beta * std_return)
+    #   0 (Hold) – иначе
     data['target'] = np.where(
-        future_return <= lower_quantile,
+        future_return < mean_return - alpha * std_return,
         1,
         np.where(
-            future_return >= upper_quantile,
+            future_return > mean_return + beta * std_return,
             2,
             0
         )
