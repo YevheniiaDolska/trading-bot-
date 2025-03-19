@@ -900,28 +900,27 @@ def extract_features(data):
     # Порог для "BUY"
     pos_threshold = 0.0005
     
-    future_return = returns.shift(-1)
-    
-    # 3. Формирование целевой переменной (2=BUY, 1=SELL, 0=HOLD)
+    # Вычисляем будущие возвраты (сдвиг на -1)
+    future_return = data['close'].pct_change(fill_method=None).shift(-1)
+
+    # Определяем нижний и верхний квантиль (33% и 66%)
+    lower_quantile = future_return.quantile(0.33)
+    upper_quantile = future_return.quantile(0.66)
+
+    # Назначаем метки:
+    #   1 — Sell, если future_return ниже нижнего квантиля,
+    #   2 — Buy, если future_return выше верхнего квантиля,
+    #   0 — Hold, для остальных случаев.
     data['target'] = np.where(
-        (future_return > pos_threshold),
-        2,
+        future_return <= lower_quantile,
+        1,
         np.where(
-            (
-                ((future_return < strong_threshold) & 
-                 (volume_ratio > 1.2) & 
-                 (price_acceleration < 0) &
-                 (data['volume'] > data['volume'].rolling(20).mean()))
-            ) |
-            (
-                (future_return < medium_threshold) & 
-                (volume_ratio > 1) &
-                (price_acceleration < 0)
-            ),
-            1,
+            future_return >= upper_quantile,
+            2,
             0
         )
     )
+
     
     # 4. Дополнительные базовые признаки
     data['returns'] = returns
