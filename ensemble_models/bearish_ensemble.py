@@ -860,6 +860,48 @@ def load_bearish_data(symbols, bearish_periods, interval="1m", save_path="/works
     return data'''
 
 
+def triple_barrier_label(prices, T=5, window=50, k=1.0):
+    """
+    Вычисляет метки по тройному барьерному методу.
+    
+    Для каждого момента времени:
+      - Рассчитывается волатильность доходностей за предыдущие `window` периодов (без утечки).
+      - За горизонт T вычисляются будущие процентные изменения цены.
+      - Если максимум будущих доходностей > (volatility * k)  => сигнал Buy (2).
+      - Если минимум будущих доходностей < -(volatility * k) => сигнал Sell (1).
+      - Иначе – сигнал Hold (0).
+    
+    Аргументы:
+      prices - серия цен (pandas.Series).
+      T - горизонт (количество периодов) для оценки будущего движения.
+      window - окно для расчёта исторической волатильности.
+      k - множитель для порогов.
+    
+    Возвращает:
+      numpy.array меток той же длины, что и prices.
+    """
+    labels = np.zeros(len(prices), dtype=int)
+    # Вычисляем доходности и историческую волатильность на основе прошлых данных
+    returns = prices.pct_change().fillna(0)
+    # Волатильность рассчитывается по предыдущим window периодам (без утечки: используем rolling до текущего момента)
+    vol = returns.rolling(window=window, min_periods=1).std()
+    
+    # Для каждого момента времени рассчитываем будущее движение цены за горизонт T
+    for i in range(len(prices) - T):
+        # Будущие доходности относительно цены в момент i
+        future_returns = prices.iloc[i+1:i+T+1].values / prices.iloc[i] - 1
+        threshold = vol.iloc[i] * k
+        if np.max(future_returns) > threshold:
+            labels[i] = 2  # Buy
+        elif np.min(future_returns) < -threshold:
+            labels[i] = 1  # Sell
+        else:
+            labels[i] = 0  # Hold
+    # Последние T записей не имеют полного горизонта – ставим Hold
+    labels[-T:] = 0
+    return labels
+
+
 # Извлечение признаков
 def extract_features(data):
     """
@@ -900,47 +942,8 @@ def extract_features(data):
     # Порог для "BUY"
     pos_threshold = 0.0005
     
-    # Вычисляем будущие возвраты (сдвиг на -1)
-    future_return = data['close'].pct_change(fill_method=None).shift(-1)
+    data['target'] = triple_barrier_label(data['close'], T=5, window=50, k=1.0)
 
-    # Параметры для динамических порогов (без утечки – статистика считается только по прошлым данным)
-    window = 50    # используем предыдущие 50 периодов
-    alpha = 1.2    # множитель для нижнего порога (Sell)
-    beta = 1.2     # множитель для верхнего порога (Buy)
-
-    # Расчёт скользящей средней и стандартного отклонения future_return с использованием только прошлых данных
-    mean_return = future_return.shift(1).rolling(window=window, min_periods=1).mean()
-    std_return = future_return.shift(1).rolling(window=window, min_periods=1).std()
-
-    # Первичное распределение сигналов на основе динамических порогов
-    data['target'] = np.where(
-        future_return < mean_return - alpha * std_return,
-        1,  # Sell
-        np.where(
-            future_return > mean_return + beta * std_return,
-            2,  # Buy
-            0   # Hold
-        )
-    )
-
-    # Проверяем, получили ли мы хотя бы по одному примеру для каждого из классов (0, 1, 2)
-    if data['target'].nunique() < 3:
-        # Если нет – применяем форсированное квантильное распределение по рангу, чтобы гарантировать три класса.
-        # Это делается без утечки, поскольку порядок future_return используется только для сортировки текущих наблюдений.
-        sorted_idx = np.argsort(future_return.values)
-        n = len(sorted_idx)
-        sell_cut = int(0.2 * n)  # нижние 20%
-        buy_cut = int(0.8 * n)   # верхние 20%
-        
-        # Создаём новый вектор меток: нижние 20% — Sell (1), верхние 20% — Buy (2), остальные — Hold (0)
-        new_target = np.zeros(n, dtype=int)
-        new_target[:sell_cut] = 1
-        new_target[buy_cut:] = 2
-        
-        # Восстанавливаем исходный порядок: элементы, отсортированные по future_return, возвращаем на свои места
-        fallback_target = np.empty(n, dtype=int)
-        fallback_target[sorted_idx] = new_target
-        data['target'] = fallback_target
 
     
     # 4. Дополнительные базовые признаки
