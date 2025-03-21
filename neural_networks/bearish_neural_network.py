@@ -508,6 +508,10 @@ def get_historical_data(symbols, bearish_periods, interval="1m", save_path="/wor
                     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", errors="coerce")
                     df.set_index("timestamp", inplace=True)
                     
+                    # Если по какой-то причине столбца 'timestamp' больше нет, добавляем его из индекса
+                    if "timestamp" not in df.columns:
+                        df["timestamp"] = df.index
+                    
                     df["symbol"] = symbol
 
                     temp_data.append(df)

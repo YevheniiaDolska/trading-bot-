@@ -863,22 +863,32 @@ def _extract_features_per_symbol(data):
 
     # 12. Многоуровневая целевая переменная для бычьего рынка
     logging.info("Рассчитываем целевую переменную 'target'...")
+    # Вычисляем будущую доходность (future returns) как относительное изменение цены
+    future_returns = data['close'].shift(-1) / data['close'] - 1
+
+    # Удаляем последнюю строку, где future_returns равен NaN
+    data = data.iloc[:-1]
+    future_returns = future_returns.iloc[:-1]
+
+    # Определяем пороги по квантилям для разделения на три класса:
+    # Класс 2 (Buy) – топ 33% будущих доходностей,
+    # Класс 0 (Sell) – нижние 33% будущих доходностей,
+    # Класс 1 (Hold) – промежуточное значение.
+    pct_33 = future_returns.quantile(0.33)
+    pct_66 = future_returns.quantile(0.66)
+
     data['target'] = np.where(
-        # Сильный сигнал: разворот вверх после коррекции
-        (data['returns'].shift(-1) > 0.001) & 
-        (data['close'] < data['sma_10']) &  # Цена ниже 10-периодной SMA
-        (data['volume_trend_conf'] > 0) &  
-        (data['rsi_5'] < 40),  # Перепроданность на RSI
-        2,
+        future_returns > pct_66, 2,   # Если будущая доходность выше верхнего порога, сигнал на покупку (Buy)
         np.where(
-            # Умеренный сигнал: локальный отскок
-            (data['returns'].shift(-1) > 0.0005) &  
-            (data['micro_trend_strength'] < 0) &  # Предшествующее падение
-            (data['volume_trend_conf'] > 0),  # Подтверждение объемом
-            1,
-            0
+            future_returns < pct_33, 0,  # Если будущая доходность ниже нижнего порога, сигнал на продажу (Sell)
+            1                          # Иначе – сигнал удержания (Hold)
         )
     )
+
+    # Дополнительное логирование для проверки распределения классов
+    print("Распределение целевых классов:")
+    print(data['target'].value_counts())
+
 
     # Логируем финальный список признаков
     logging.info(f"Финальные признаки: {list(data.columns)}")
