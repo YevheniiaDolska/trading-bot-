@@ -573,6 +573,13 @@ def get_historical_data(symbols, bullish_periods, interval="1m", save_path="/wor
                     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", errors="coerce")
                     df.set_index("timestamp", inplace=True)
                     
+                    # Если индекс не является DatetimeIndex, пытаемся его преобразовать
+                    if not isinstance(df.index, pd.DatetimeIndex):
+                        try:
+                            df.index = pd.to_datetime(df.index, errors="coerce")
+                        except Exception as e:
+                            logging.error(f"Ошибка преобразования индекса в DatetimeIndex: {e}")
+                                    
                     # Если по какой-то причине столбца 'timestamp' больше нет, добавляем его из индекса
                     if "timestamp" not in df.columns:
                         df["timestamp"] = df.index
