@@ -1220,7 +1220,7 @@ def build_bullish_neural_network(data):
     
     history = model.fit(
         train_dataset,
-        epochs=1,  # 200
+        epochs=200,  # 200
         validation_data=val_dataset,
         class_weight=class_weights,
         callbacks=[
@@ -1303,11 +1303,19 @@ if __name__ == "__main__":
         # Инициализация стратегии (TPU или CPU/GPU)
         strategy = initialize_strategy()
 
-        symbols = ['BTCUSDC', 'ETHUSDC']
+        symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
         
         bullish_periods = [
+            {"start": "2017-06-01", "end": "2017-08-31"},
+            {"start": "2017-11-01", "end": "2018-01-16"},
+            {"start": "2020-11-01", "end": "2021-01-31"},
             {"start": "2021-03-01", "end": "2021-04-30"},
+            {"start": "2021-08-15", "end": "2021-10-20"},
+            {"start": "2023-02-01", "end": "2023-03-31"},
+            {"start": "2023-03-15", "end": "2023-05-15"},
+            {"start": "2024-04-01", "end": "2024-06-30"}
         ]
+
 
         # Загрузка данных для бычьих периодов
         logging.info("Загрузка данных для бычьих периодов")
