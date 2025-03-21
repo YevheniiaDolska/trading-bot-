@@ -702,7 +702,8 @@ def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="binanc
         combined = new_combined
 
     # Принудительно преобразуем индекс в DatetimeIndex
-    combined.index = pd.to_datetime(combined.index, errors='coerce')
+    combined.index = pd.to_datetime(combined.index, errors='coerce', utc=True)
+
     if not isinstance(combined.index, pd.DatetimeIndex):
         logging.error(f"После преобразования индекс имеет тип: {type(combined.index)}")
         raise ValueError("Колонка 'timestamp' отсутствует, и индекс не является DatetimeIndex.")
