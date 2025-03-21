@@ -701,18 +701,31 @@ def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="binanc
     else:
         combined = new_combined
 
-    # Принудительно преобразуем индекс в DatetimeIndex
-    combined.index = pd.to_datetime(combined.index, errors='coerce', utc=True)
+    # Сбросим индекс, чтобы гарантировать наличие столбца 'timestamp'
+    combined = combined.reset_index()
 
+    # Если столбца 'timestamp' отсутствует, попробуем переименовать столбец 'index'
+    if 'timestamp' not in combined.columns:
+        if 'index' in combined.columns:
+            combined = combined.rename(columns={'index': 'timestamp'})
+            logging.info("Столбец 'index' переименован в 'timestamp'.")
+        else:
+            logging.error("Нет столбца 'timestamp' и 'index' для восстановления временных меток!")
+            raise ValueError("Отсутствует столбец с временными метками.")
+
+    # Преобразуем столбец 'timestamp' в datetime с utc=True
+    combined['timestamp'] = pd.to_datetime(combined['timestamp'], errors='coerce', utc=True)
+    # Удалим строки с нераспознанными датами
+    combined = combined.dropna(subset=['timestamp'])
+    # Установим столбец 'timestamp' в качестве индекса
+    combined = combined.set_index('timestamp')
+
+    # Проверяем, что индекс теперь имеет тип DatetimeIndex
     if not isinstance(combined.index, pd.DatetimeIndex):
         logging.error(f"После преобразования индекс имеет тип: {type(combined.index)}")
         raise ValueError("Колонка 'timestamp' отсутствует, и индекс не является DatetimeIndex.")
     else:
-        if 'timestamp' not in combined.columns:
-            combined['timestamp'] = combined.index
-            logging.info("Индекс успешно преобразован в DatetimeIndex и добавлен как колонка 'timestamp'.")
-        else:
-            logging.info("Колонка 'timestamp' уже присутствует.")
+        logging.info("Индекс успешно преобразован в DatetimeIndex и сохранён как 'timestamp'.")
 
     # Сохраняем итоговый DataFrame с указанием имени колонки индекса
     combined.to_csv(save_path, index_label='timestamp')

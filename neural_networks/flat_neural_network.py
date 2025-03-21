@@ -583,14 +583,17 @@ def get_historical_data(symbols, flat_periods, interval="1m", save_path="/worksp
 
 def load_flat_data(symbols, flat_periods, interval="1m", save_path="binance_data_flat.csv"):
     """
-    Загружает данные для флэтового рынка для заданных символов и периодов.
+    Загружает данные для заданных символов и периодов.
     Если файл save_path уже существует, новые данные объединяются с уже сохранёнными.
     Возвращает словарь, где для каждого символа содержится DataFrame с объединёнными данными.
     """
     # Если файл уже существует – читаем существующие данные
     if os.path.exists(save_path):
         try:
-            existing_data = pd.read_csv(save_path, index_col=0, parse_dates=True, on_bad_lines='skip')
+            existing_data = pd.read_csv(save_path,
+                                        index_col='timestamp',
+                                        parse_dates=['timestamp'],
+                                        on_bad_lines='skip')
             logging.info(f"Считаны существующие данные из {save_path}, строк: {len(existing_data)}")
         except Exception as e:
             logging.error(f"Ошибка при чтении существующего файла {save_path}: {e}")
@@ -599,11 +602,10 @@ def load_flat_data(symbols, flat_periods, interval="1m", save_path="binance_data
         existing_data = pd.DataFrame()
 
     all_data = {}  # Словарь для хранения данных по каждому символу
-    logging.info(f"🚀 Начало загрузки данных за заданные периоды для символов: {symbols}")
+    logging.info(f"🚀 Начало загрузки данных для символов: {symbols}")
 
-    # Запускаем загрузку данных параллельно для каждого символа
+    # Загрузка данных параллельно для каждого символа
     with ThreadPoolExecutor(max_workers=4) as executor:
-        # Передаём в get_historical_data параметр save_path, чтобы все загрузки записывались в один файл
         futures = {
             executor.submit(get_historical_data, [symbol], flat_periods, interval, save_path): symbol
             for symbol in symbols
@@ -611,23 +613,25 @@ def load_flat_data(symbols, flat_periods, interval="1m", save_path="binance_data
         for future in futures:
             symbol = futures[future]
             try:
-                # get_historical_data возвращает путь к файлу с загруженными данными
                 temp_file_path = future.result()
                 if temp_file_path is not None:
-                    # Используем on_bad_lines='skip', чтобы пропустить проблемные строки
-                    new_data = pd.read_csv(temp_file_path, index_col=0, parse_dates=True, on_bad_lines='skip')
+                    # Важно: читаем с параметрами index_col='timestamp', parse_dates=['timestamp']
+                    new_data = pd.read_csv(temp_file_path,
+                                           index_col='timestamp',
+                                           parse_dates=['timestamp'],
+                                           on_bad_lines='skip')
                     if symbol in all_data:
                         all_data[symbol].append(new_data)
                     else:
                         all_data[symbol] = [new_data]
-                    logging.info(f"✅ Данные добавлены для {symbol}. Текущий список: {len(all_data[symbol])} файлов.")
+                    logging.info(f"✅ Данные добавлены для {symbol}. Файлов: {len(all_data[symbol])}")
             except Exception as e:
                 logging.error(f"❌ Ошибка загрузки данных для {symbol}: {e}")
 
-    # Объединяем данные для каждого символа, если список не пустой
+    # Объединяем данные для каждого символа
     for symbol in list(all_data.keys()):
         if all_data[symbol]:
-            all_data[symbol] = pd.concat(all_data[symbol])
+            all_data[symbol] = pd.concat(all_data[symbol], ignore_index=False)
         else:
             del all_data[symbol]
 
@@ -637,17 +641,28 @@ def load_flat_data(symbols, flat_periods, interval="1m", save_path="binance_data
     else:
         new_combined = pd.DataFrame()
 
-    # Объединяем с уже существующими данными (если таковые имеются)
+    # Объединяем с уже существующими данными (если имеются)
     if not existing_data.empty:
         combined = pd.concat([existing_data, new_combined], ignore_index=False)
     else:
         combined = new_combined
 
-    # Сохраняем итоговый объединённый DataFrame в единый CSV-файл
-    combined.to_csv(save_path)
-    logging.info(f"💾 Обновлённые данные сохранены в {save_path} (итоговых строк: {len(combined)})")
+    # Принудительно преобразуем индекс в DatetimeIndex
+    combined.index = pd.to_datetime(combined.index, errors='coerce', utc=True)
 
-    # Возвращаем словарь с данными по каждому символу (обновлёнными только новыми данными)
+    if not isinstance(combined.index, pd.DatetimeIndex):
+        logging.error(f"После преобразования индекс имеет тип: {type(combined.index)}")
+        raise ValueError("Колонка 'timestamp' отсутствует, и индекс не является DatetimeIndex.")
+    else:
+        if 'timestamp' not in combined.columns:
+            combined['timestamp'] = combined.index
+            logging.info("Индекс успешно преобразован в DatetimeIndex и добавлен как колонка 'timestamp'.")
+        else:
+            logging.info("Колонка 'timestamp' уже присутствует.")
+
+    # Сохраняем итоговый DataFrame с указанием имени колонки индекса
+    combined.to_csv(save_path, index_label='timestamp')
+    logging.info(f"💾 Обновлённые данные сохранены в {save_path} (итоговых строк: {len(combined)})")
     return all_data
 
 
