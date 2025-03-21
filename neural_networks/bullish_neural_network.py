@@ -669,7 +669,7 @@ def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="binanc
             try:
                 temp_file_path = future.result()
                 if temp_file_path is not None:
-                    # Важно: читаем с параметрами index_col='timestamp', parse_dates=['timestamp']
+                    # Читаем с указанием index_col и parse_dates
                     new_data = pd.read_csv(temp_file_path,
                                            index_col='timestamp',
                                            parse_dates=['timestamp'],
@@ -701,37 +701,38 @@ def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="binanc
     else:
         combined = new_combined
 
-    # Сбросим индекс, чтобы гарантировать наличие столбца 'timestamp'
-    combined = combined.reset_index()
+    # --- Обработка временных меток ---
+    # Сбросим индекс, чтобы гарантировать наличие столбца с датами
+    combined = combined.reset_index(drop=False)
 
-    # Если столбца 'timestamp' отсутствует, попробуем переименовать столбец 'index'
+    # Если столбца 'timestamp' отсутствует, пытаемся переименовать столбец 'index'
     if 'timestamp' not in combined.columns:
         if 'index' in combined.columns:
             combined = combined.rename(columns={'index': 'timestamp'})
             logging.info("Столбец 'index' переименован в 'timestamp'.")
         else:
-            logging.error("Нет столбца 'timestamp' и 'index' для восстановления временных меток!")
+            logging.error("Не найден столбец 'timestamp' или 'index' для восстановления временных меток!")
             raise ValueError("Отсутствует столбец с временными метками.")
 
     # Преобразуем столбец 'timestamp' в datetime с utc=True
     combined['timestamp'] = pd.to_datetime(combined['timestamp'], errors='coerce', utc=True)
-    # Удалим строки с нераспознанными датами
+    # Удалим строки, где преобразование не удалось
     combined = combined.dropna(subset=['timestamp'])
-    # Установим столбец 'timestamp' в качестве индекса
+    # Установим 'timestamp' как индекс
     combined = combined.set_index('timestamp')
 
-    # Проверяем, что индекс теперь имеет тип DatetimeIndex
+    # Финальная проверка типа индекса
     if not isinstance(combined.index, pd.DatetimeIndex):
         logging.error(f"После преобразования индекс имеет тип: {type(combined.index)}")
-        raise ValueError("Колонка 'timestamp' отсутствует, и индекс не является DatetimeIndex.")
+        raise ValueError("Индекс не является DatetimeIndex.")
     else:
-        logging.info("Индекс успешно преобразован в DatetimeIndex и сохранён как 'timestamp'.")
+        logging.info("Индекс успешно преобразован в DatetimeIndex.")
 
     # Сохраняем итоговый DataFrame с указанием имени колонки индекса
     combined.to_csv(save_path, index_label='timestamp')
     logging.info(f"💾 Обновлённые данные сохранены в {save_path} (итоговых строк: {len(combined)})")
-    return all_data
 
+    return all_data
 
 
 '''def aggregate_to_2min(data):
