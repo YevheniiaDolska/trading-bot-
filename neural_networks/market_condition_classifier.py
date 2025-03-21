@@ -104,6 +104,24 @@ class MarketClassifier:
         self.model_path = model_path
         self.scaler_path = scaler_path
         self.base_url = "https://data.binance.vision/data/spot/monthly/klines/{symbol}/1m/"
+        
+        
+    def apply_in_chunks(df, func, chunk_size=100000):
+        """
+        Применяет функцию func к DataFrame по чанкам заданного размера.
+        Если df не является DataFrame, возвращает func(df).
+        """
+        if not isinstance(df, pd.DataFrame):
+            return func(df)
+        if len(df) <= chunk_size:
+            return func(df)
+        # Разбиваем DataFrame на чанки
+        chunks = [df.iloc[i:i+chunk_size] for i in range(0, len(df), chunk_size)]
+        # Применяем функцию к каждому чанку
+        processed_chunks = [func(chunk) for chunk in chunks]
+        # Объединяем обработанные чанки в один DataFrame
+        return pd.concat(processed_chunks)
+    
 
     def fetch_binance_data(self, symbol, interval, start_date, end_date):
         """
@@ -296,60 +314,59 @@ class MarketClassifier:
         return scaler, features
 
     def data_generator_split(self, data_path, scaler, features, batch_size, chunk_size=10000, 
-                             split='train', train_fraction=0.8, random_seed=42):
-        """
-        Генератор, который читает CSV-файл чанками, выполняет обработку данных и делит их 
-        на тренировочную и валидационную выборки согласно train_fraction.
-        Для каждого чанка данные перемешиваются, масштабируются и разбиваются на мини-батчи.
-        """
-        chunk_counter = 0
-        for chunk in pd.read_csv(data_path, chunksize=chunk_size):
-            chunk.dropna(inplace=True)
-            if 'atr' not in chunk.columns:
-                chunk = self.add_indicators(chunk)
-            chunk = self.remove_outliers(chunk)
-            label_mapping = {'bullish': 0, 'bearish': 1, 'flat': 2}
-            chunk['market_type'] = chunk['market_type'].map(label_mapping)
-            chunk.dropna(subset=['market_type'], inplace=True)
-            
-            X_chunk = chunk[features].values
-            y_chunk = chunk['market_type'].values.astype(int)
-            n_samples = X_chunk.shape[0]
-            
-            # Разбивка данных на тренировочную и валидационную выборки
-            r = np.random.RandomState(random_seed + chunk_counter)
-            random_vals = r.rand(n_samples)
-            if split == 'train':
-                mask = random_vals < train_fraction
-            else:
-                mask = random_vals >= train_fraction
-            
-            X_selected = X_chunk[mask]
-            y_selected = y_chunk[mask]
-            if X_selected.shape[0] == 0:
-                chunk_counter += 1
-                continue
-            
-            # Масштабирование
-            X_scaled = scaler.transform(X_selected)
-            # Перемешивание данных в чанке
-            indices = np.arange(X_scaled.shape[0])
-            r_shuffle = np.random.RandomState(random_seed + chunk_counter + 1000)
-            r_shuffle.shuffle(indices)
-            X_scaled = X_scaled[indices]
-            y_selected = y_selected[indices]
-            
-            n_sel = X_scaled.shape[0]
-            # Разбиение чанка на мини-батчи
-            for i in range(0, n_sel, batch_size):
-                batch_idx = slice(i, i + batch_size)
-                X_batch = X_scaled[batch_idx]
-                y_batch = y_selected[batch_idx]
-                # Добавляем временную ось для LSTM (форма: [batch, time=1, features])
-                X_batch = np.expand_dims(X_batch, axis=1)
-                yield X_batch.astype(np.float32), y_batch.astype(np.int32)
-            
+                         split='train', train_fraction=0.8, random_seed=42):
+    """
+    Генератор, который читает CSV-файл чанками, выполняет обработку данных и делит их 
+    на тренировочную и валидационную выборки согласно train_fraction.
+    """
+    chunk_counter = 0
+    # Функция для дополнительной обработки каждого подчанка
+    def process_subchunk(sub_df):
+        # Добавляем индикаторы и удаляем выбросы для подчанка
+        sub_df = self.add_indicators(sub_df)
+        sub_df = self.remove_outliers(sub_df)
+        return sub_df
+
+    for chunk in pd.read_csv(data_path, chunksize=chunk_size):
+        chunk.dropna(inplace=True)
+        # Если данные в чанке все ещё очень большие, делим их дополнительно
+        # Здесь вызываем apply_in_chunks для дополнительной обработки
+        chunk = apply_in_chunks(chunk, process_subchunk, chunk_size=5000)
+        
+        label_mapping = {'bullish': 0, 'bearish': 1, 'flat': 2}
+        chunk['market_type'] = chunk['market_type'].map(label_mapping)
+        chunk.dropna(subset=['market_type'], inplace=True)
+        
+        X_chunk = chunk[features].values
+        y_chunk = chunk['market_type'].values.astype(int)
+        n_samples = X_chunk.shape[0]
+        
+        r = np.random.RandomState(random_seed + chunk_counter)
+        random_vals = r.rand(n_samples)
+        mask = random_vals < train_fraction if split == 'train' else random_vals >= train_fraction
+        X_selected = X_chunk[mask]
+        y_selected = y_chunk[mask]
+        if X_selected.shape[0] == 0:
             chunk_counter += 1
+            continue
+        
+        X_scaled = scaler.transform(X_selected)
+        indices = np.arange(X_scaled.shape[0])
+        r_shuffle = np.random.RandomState(random_seed + chunk_counter + 1000)
+        r_shuffle.shuffle(indices)
+        X_scaled = X_scaled[indices]
+        y_selected = y_selected[indices]
+        
+        n_sel = X_scaled.shape[0]
+        for i in range(0, n_sel, batch_size):
+            batch_idx = slice(i, i + batch_size)
+            X_batch = X_scaled[batch_idx]
+            y_batch = y_selected[batch_idx]
+            X_batch = np.expand_dims(X_batch, axis=1)
+            yield X_batch.astype(np.float32), y_batch.astype(np.int32)
+        
+        chunk_counter += 1
+
 
     def prepare_training_dataset(self, data_path, scaler, features, batch_size, chunk_size=10000, 
                                  split='train', train_fraction=0.8, random_seed=42):
