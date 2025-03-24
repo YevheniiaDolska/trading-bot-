@@ -115,125 +115,83 @@ def save_logs_to_file(log_message):
     with open(log_file, 'a') as log_f:
         log_f.write(f"{datetime.now()}: {log_message}\n")
         
+        
 def calculate_cross_coin_features(data_dict):
-    """
-    Рассчитывает межмонетные признаки для всех пар.
-    
-    Args:
-        data_dict (dict): Словарь DataFrame'ов по каждой монете
-    Returns:
-        dict: Словарь DataFrame'ов с добавленными признаками
-    """
     btc_data = data_dict['BTCUSDC']
-    
     for symbol, df in data_dict.items():
-        # Корреляции с BTC
-        df['btc_corr'] = df['close'].rolling(30).corr(btc_data['close'])
+        # CHANGED FOR SCALPING
+        df['btc_corr'] = df['close'].rolling(15).corr(btc_data['close'])
+        df['rel_strength_btc'] = df['close'].pct_change() - btc_data['close'].pct_change()
         
-        # Относительная сила к BTC
-        df['rel_strength_btc'] = (df['close'].pct_change() - 
-                                btc_data['close'].pct_change())
+        # CHANGED FOR SCALPING
+        df['beta_btc'] = df['close'].pct_change().rolling(15).cov(btc_data['close'].pct_change()) / \
+                         btc_data['close'].pct_change().rolling(15).var()
         
-        # Бета к BTC
-        df['beta_btc'] = (df['close'].pct_change().rolling(30).cov(
-            btc_data['close'].pct_change()) / 
-            btc_data['close'].pct_change().rolling(30).var())
-        
-        # Опережение/следование за BTC
-        df['lead_lag_btc'] = df['close'].pct_change().shift(1).rolling(10).corr(
-            btc_data['close'].pct_change())
-            
+        # CHANGED FOR SCALPING
+        df['lead_lag_btc'] = df['close'].pct_change().shift(1).rolling(5).corr(btc_data['close'].pct_change())
         data_dict[symbol] = df
-        
     return data_dict
+
 
 def detect_anomalies(data):
     """
     Детектирует и фильтрует аномальные свечи.
+    Для торговли на колебаниях используется более короткое окно (10 свечей) и сниженный порог обнаружения.
     """
-    # Рассчитываем z-score для разных метрик
-    data['volume_zscore'] = ((data['volume'] - data['volume'].rolling(100).mean()) / 
-                            data['volume'].rolling(100).std())
-    data['price_zscore'] = ((data['close'] - data['close'].rolling(100).mean()) / 
-                           data['close'].rolling(100).std())
-    data['range_zscore'] = (((data['high'] - data['low']) - 
-                            (data['high'] - data['low']).rolling(100).mean()) / 
-                           (data['high'] - data['low']).rolling(100).std())
+    # Рассчитываем z-score для объёма и цены по окну из 10 свечей
+    data['volume_zscore'] = ((data['volume'] - data['volume'].rolling(10).mean()) / 
+                             data['volume'].rolling(10).std())
+    data['price_zscore'] = ((data['close'] - data['close'].rolling(10).mean()) / 
+                            data['close'].rolling(10).std())
     
-    # Фильтруем экстремальные выбросы
-    data['is_anomaly'] = ((abs(data['volume_zscore']) > 4) | 
-                         (abs(data['price_zscore']) > 4) | 
-                         (abs(data['range_zscore']) > 4))
-    
+    # Используем порог 2.5 вместо 3 для более чувствительного обнаружения экстремумов
+    data['is_anomaly'] = ((abs(data['volume_zscore']) > 2.5) & (data['close'] < data['close'].shift(1))) | \
+                         (abs(data['price_zscore']) > 2.5)
     return data
 
+
 def validate_volume_confirmation(data):
-    """
-    Добавляет признаки подтверждения движений объемом.
-    """
-    # Объемное подтверждение тренда
+    # CHANGED FOR SCALPING
     data['volume_trend_conf'] = np.where(
         (data['close'] > data['close'].shift(1)) & 
-        (data['volume'] > data['volume'].rolling(20).mean()),
+        (data['volume'] > data['volume'].rolling(5).mean()),
         1,
         np.where(
             (data['close'] < data['close'].shift(1)) & 
-            (data['volume'] > data['volume'].rolling(20).mean()),
+            (data['volume'] > data['volume'].rolling(5).mean()),
             -1,
             0
         )
     )
-    
-    # Сила объемного подтверждения
-    data['volume_strength'] = (data['volume'] / 
-                             data['volume'].rolling(20).mean() * 
-                             data['volume_trend_conf'])
-    
-    # Накопление объема
-    data['volume_accumulation'] = data['volume_trend_conf'].rolling(5).sum()
-    
+    data['volume_strength'] = (
+        data['volume'] / data['volume'].rolling(5).mean()
+    ) * data['volume_trend_conf']
+    data['volume_accumulation'] = data['volume_trend_conf'].rolling(2).sum()
     return data
+
 
 
 def remove_noise(data):
     """
     Улучшенная фильтрация шума с использованием фильтра Калмана.
+    Параметры фильтра настроены для быстрой адаптации к колебаниям на 1-минутном таймфрейме.
     """
-    # Kalman filter для сглаживания цены
+
     kf = KalmanFilter(dim_x=2, dim_z=1)
     kf.x = np.array([[data['close'].iloc[0]], [0.]])
     kf.F = np.array([[1., 1.], [0., 1.]])
     kf.H = np.array([[1., 0.]])
     kf.P *= 10
-    kf.R = 5  
-    kf.Q = np.array([[0.1, 0.1], [0.1, 0.1]])  
-
+    kf.R = 2
+    kf.Q = np.array([[0.1, 0.1], [0.1, 0.1]])  # Понижено для быстрого отклика фильтра
     smoothed_prices = []
     for price in data['close']:
         kf.predict()
         kf.update(price)
         smoothed_prices.append(float(kf.x[0]))
-
     data['smoothed_close'] = smoothed_prices
-
-    data['price_volatility'] = data['close'].rolling(20).std()
-    data['is_significant_move'] = (data['close'].pct_change().abs() > 
-                                 data['price_volatility'] * 2)
-
-    # **Исправление: гарантируем, что clean_returns создаётся**
-    if 'clean_returns' not in data.columns:
-        data['clean_returns'] = 0.0  # Избегаем KeyError
-
-    data['clean_returns'] = np.where(
-        data['is_significant_move'] & (data['is_anomaly'] == 0),
-        data['smoothed_close'].pct_change(),
-        0
-    )
-
-    # **Заполняем NaN и убираем dropna()**
-    data['clean_returns'].fillna(0, inplace=True)
-
     return data
+
 
 
 def preprocess_market_data(data_dict):
@@ -586,14 +544,35 @@ def load_flat_data(symbols, flat_periods, interval="1m", save_path="binance_data
     Загружает данные для заданных символов и периодов.
     Если файл save_path уже существует, новые данные объединяются с уже сохранёнными.
     Возвращает словарь, где для каждого символа содержится DataFrame с объединёнными данными.
+    Чтение CSV выполняется по чанкам для снижения нагрузки на память.
     """
-    # Если файл уже существует – читаем существующие данные
+    CHUNK_SIZE = 200000  # размер чанка для чтения CSV
+
+    # Если файл уже существует – читаем существующие данные по чанкам
     if os.path.exists(save_path):
         try:
-            existing_data = pd.read_csv(save_path,
-                                        index_col='timestamp',
-                                        parse_dates=['timestamp'],
-                                        on_bad_lines='skip')
+            chunks = []
+            for chunk in pd.read_csv(save_path,
+                                     index_col='timestamp',
+                                     parse_dates=['timestamp'],
+                                     on_bad_lines='skip',
+                                     chunksize=CHUNK_SIZE):
+                # Сброс индекса, чтобы гарантировать наличие столбца с датами
+                chunk = chunk.reset_index(drop=False)
+                if 'timestamp' not in chunk.columns:
+                    if 'index' in chunk.columns:
+                        chunk.rename(columns={'index': 'timestamp'}, inplace=True)
+                        logging.info("Столбец 'index' переименован в 'timestamp'.")
+                    else:
+                        raise ValueError("Отсутствует столбец с временными метками.")
+                # Преобразуем столбец 'timestamp' в datetime с utc=True
+                chunk['timestamp'] = pd.to_datetime(chunk['timestamp'], errors='coerce', utc=True)
+                # Удаляем строки с нераспознанными датами
+                chunk = chunk.dropna(subset=['timestamp'])
+                # Устанавливаем 'timestamp' как индекс
+                chunk = chunk.set_index('timestamp')
+                chunks.append(chunk)
+            existing_data = pd.concat(chunks, ignore_index=False)
             logging.info(f"Считаны существующие данные из {save_path}, строк: {len(existing_data)}")
         except Exception as e:
             logging.error(f"Ошибка при чтении существующего файла {save_path}: {e}")
@@ -615,11 +594,29 @@ def load_flat_data(symbols, flat_periods, interval="1m", save_path="binance_data
             try:
                 temp_file_path = future.result()
                 if temp_file_path is not None:
-                    # Важно: читаем с параметрами index_col='timestamp', parse_dates=['timestamp']
-                    new_data = pd.read_csv(temp_file_path,
-                                           index_col='timestamp',
-                                           parse_dates=['timestamp'],
-                                           on_bad_lines='skip')
+                    # Читаем скачанный файл по чанкам
+                    chunks = []
+                    for chunk in pd.read_csv(temp_file_path,
+                                             index_col='timestamp',
+                                             parse_dates=['timestamp'],
+                                             on_bad_lines='skip',
+                                             chunksize=CHUNK_SIZE):
+                        chunk = chunk.reset_index(drop=False)
+                        if 'timestamp' not in chunk.columns:
+                            if 'index' in chunk.columns:
+                                chunk.rename(columns={'index': 'timestamp'}, inplace=True)
+                                logging.info("Столбец 'index' переименован в 'timestamp' при чтении новых данных.")
+                            else:
+                                raise ValueError("Отсутствует столбец с временными метками в новых данных.")
+                        chunk['timestamp'] = pd.to_datetime(chunk['timestamp'], errors='coerce', utc=True)
+                        chunk = chunk.dropna(subset=['timestamp'])
+                        chunk = chunk.set_index('timestamp')
+                        chunks.append(chunk)
+                    if chunks:
+                        new_data = pd.concat(chunks, ignore_index=False)
+                    else:
+                        new_data = pd.DataFrame()
+                    
                     if symbol in all_data:
                         all_data[symbol].append(new_data)
                     else:
@@ -647,18 +644,25 @@ def load_flat_data(symbols, flat_periods, interval="1m", save_path="binance_data
     else:
         combined = new_combined
 
-    # Принудительно преобразуем индекс в DatetimeIndex
-    combined.index = pd.to_datetime(combined.index, errors='coerce', utc=True)
+    # --- Обработка временных меток ---
+    # Сбросим индекс, чтобы гарантировать наличие столбца с датами
+    combined = combined.reset_index(drop=False)
+    if 'timestamp' not in combined.columns:
+        if 'index' in combined.columns:
+            combined.rename(columns={'index': 'timestamp'}, inplace=True)
+            logging.info("Столбец 'index' переименован в 'timestamp' при окончательном объединении.")
+        else:
+            logging.error("Не найден столбец 'timestamp' или 'index' в итоговых данных!")
+            raise ValueError("Отсутствует столбец с временными метками.")
+    combined['timestamp'] = pd.to_datetime(combined['timestamp'], errors='coerce', utc=True)
+    combined = combined.dropna(subset=['timestamp'])
+    combined = combined.set_index('timestamp')
 
     if not isinstance(combined.index, pd.DatetimeIndex):
-        logging.error(f"После преобразования индекс имеет тип: {type(combined.index)}")
-        raise ValueError("Колонка 'timestamp' отсутствует, и индекс не является DatetimeIndex.")
+        logging.error(f"После преобразования итоговый индекс имеет тип: {type(combined.index)}")
+        raise ValueError("Индекс не является DatetimeIndex.")
     else:
-        if 'timestamp' not in combined.columns:
-            combined['timestamp'] = combined.index
-            logging.info("Индекс успешно преобразован в DatetimeIndex и добавлен как колонка 'timestamp'.")
-        else:
-            logging.info("Колонка 'timestamp' уже присутствует.")
+        logging.info("Индекс успешно преобразован в DatetimeIndex.")
 
     # Сохраняем итоговый DataFrame с указанием имени колонки индекса
     combined.to_csv(save_path, index_label='timestamp')
@@ -762,14 +766,24 @@ def extract_features(data):
     volatility = data['returns'].rolling(20).std()
     avg_volatility = volatility.rolling(100).mean()
     
+    # Целевая переменная для флэтового рынка - фокус на небольших но частых движениях
+    threshold = 0.0002  # Уменьшаем порог для более частых сигналов
     data['target'] = np.where(
-        (abs(data['returns'].shift(-1)) < 0.0002) &  # Малое изменение цены
-        (data['volume_ratio'] < 1.2) &  # Нет всплесков объема
-        (volatility < avg_volatility) &  # Низкая волатильность
-        (data['range_ratio'] < 1.1) &   # Стабильный диапазон
-        (data['breakout_intensity'] < 0.3), # Нет сильных пробоев
-        1,  # Флэтовый сигнал
-        0   # Не флэт
+        # Порог на покупку (2)
+        (data['returns'].shift(-1) > threshold) &
+        (data['volume'] > data['volume_ma']) &  # Объемное подтверждение
+        (data['rsi_3'] < 40) &  # Локальная перепроданность
+        (data['bb_position'] < 0.3),  # Нижняя часть канала
+        2,
+        np.where(
+            # Порог на продажу (1)
+            (data['returns'].shift(-1) < -threshold) &
+            (data['volume'] > data['volume_ma']) &  # Объемное подтверждение
+            (data['rsi_3'] > 60) &  # Локальная перекупленность
+            (data['bb_position'] > 0.7),  # Верхняя часть канала
+            1,
+            0  # Hold
+        )
     )
     
     # Создаем словарь признаков

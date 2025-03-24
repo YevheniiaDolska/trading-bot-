@@ -246,22 +246,24 @@ class MarketClassifier:
     def add_indicators(self, data):
         """Расширенный набор индикаторов для точной классификации с использованием pandas_ta"""
         # Базовые индикаторы
-        data['atr'] = ta.atr(data['high'], data['low'], data['close'], length=14)
-        data['adx'] = ta.adx(data['high'], data['low'], data['close'], length=14)['ADX_14']
+        data['atr'] = ta.atr(data['high'], data['low'], data['close'], length=7)
+        data['adx'] = ta.adx(data['high'], data['low'], data['close'], length=7)['ADX_7']
         
         # Множественные MA для определения силы тренда
-        for period in [10, 20, 50, 100]:
+        # CHANGED FOR SCALPING
+        for period in [5, 10, 15, 20]:  # Было [10, 20, 50, 100]
             data[f'sma_{period}'] = ta.sma(data['close'], length=period)
             data[f'ema_{period}'] = ta.ema(data['close'], length=period)
+
         
         # Импульсные индикаторы
-        data['rsi'] = ta.rsi(data['close'], length=14)
+        data['rsi'] = ta.rsi(data['close'], length=7)
         macd = ta.macd(data['close'], fast=12, slow=26, signal=9)
         data['macd'], data['macd_signal'], data['macd_hist'] = macd['MACD_12_26_9'], macd['MACDs_12_26_9'], macd['MACDh_12_26_9']
         data['willr'] = ta.willr(data['high'], data['low'], data['close'], length=14)
         
         # Волатильность
-        bb = ta.bbands(data['close'], length=20, std=2)
+        bb = ta.bbands(data['close'], length=10, std=2)
         data['bb_upper'], data['bb_middle'], data['bb_lower'] = bb['BBU_20_2.0'], bb['BBM_20_2.0'], bb['BBL_20_2.0']
         data['bb_width'] = (data['bb_upper'] - data['bb_lower']) / data['bb_middle']
         

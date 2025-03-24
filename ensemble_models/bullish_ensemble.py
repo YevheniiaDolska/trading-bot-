@@ -119,112 +119,73 @@ def ensure_directory(path):
         
         
 def calculate_cross_coin_features(data_dict):
-    """
-    Рассчитывает межмонетные признаки для всех пар.
-    
-    Args:
-        data_dict (dict): Словарь DataFrame'ов по каждой монете
-    Returns:
-        dict: Словарь DataFrame'ов с добавленными признаками
-    """
     btc_data = data_dict['BTCUSDC']
-    
     for symbol, df in data_dict.items():
-        # Корреляции с BTC
-        df['btc_corr'] = df['close'].rolling(30).corr(btc_data['close'])
-        
-        # Относительная сила к BTC
-        df['rel_strength_btc'] = (df['close'].pct_change() - 
-                                btc_data['close'].pct_change())
-        
-        # Бета к BTC
-        df['beta_btc'] = (df['close'].pct_change().rolling(30).cov(
-            btc_data['close'].pct_change()) / 
-            btc_data['close'].pct_change().rolling(30).var())
-        
-        # Опережение/следование за BTC
-        df['lead_lag_btc'] = df['close'].pct_change().shift(1).rolling(10).corr(
-            btc_data['close'].pct_change())
-            
+        # CHANGED FOR SCALPING
+        df['btc_corr'] = df['close'].rolling(15).corr(btc_data['close'])
+        df['rel_strength_btc'] = (df['close'].pct_change() - btc_data['close'].pct_change())
+        # CHANGED FOR SCALPING
+        df['beta_btc'] = (
+            df['close'].pct_change().rolling(15).cov(btc_data['close'].pct_change())
+            / btc_data['close'].pct_change().rolling(15).var()
+        )
+        # CHANGED FOR SCALPING
+        df['lead_lag_btc'] = df['close'].pct_change().shift(1).rolling(5).corr(btc_data['close'].pct_change())
         data_dict[symbol] = df
-        
     return data_dict
+
 
 def detect_anomalies(data):
     """
     Детектирует и фильтрует аномальные свечи.
+    Для торговли на колебаниях используется более короткое окно (10 свечей) и сниженный порог обнаружения.
     """
-    # Рассчитываем z-score для разных метрик
-    data['volume_zscore'] = ((data['volume'] - data['volume'].rolling(100).mean()) / 
-                            data['volume'].rolling(100).std())
-    data['price_zscore'] = ((data['close'] - data['close'].rolling(100).mean()) / 
-                           data['close'].rolling(100).std())
-    data['range_zscore'] = (((data['high'] - data['low']) - 
-                            (data['high'] - data['low']).rolling(100).mean()) / 
-                           (data['high'] - data['low']).rolling(100).std())
+    # Рассчитываем z-score для объёма и цены по окну из 10 свечей
+    data['volume_zscore'] = ((data['volume'] - data['volume'].rolling(10).mean()) / 
+                             data['volume'].rolling(10).std())
+    data['price_zscore'] = ((data['close'] - data['close'].rolling(10).mean()) / 
+                            data['close'].rolling(10).std())
     
-    # Фильтруем экстремальные выбросы
-    data['is_anomaly'] = ((abs(data['volume_zscore']) > 4) | 
-                         (abs(data['price_zscore']) > 4) | 
-                         (abs(data['range_zscore']) > 4))
-    
+    # Используем порог 2.5 вместо 3 для более чувствительного обнаружения экстремумов
+    data['is_anomaly'] = ((abs(data['volume_zscore']) > 2.5) & (data['close'] < data['close'].shift(1))) | \
+                         (abs(data['price_zscore']) > 2.5)
     return data
 
-def validate_volume_confirmation_bullish(data):
-    """
-    Добавляет признаки подтверждения движений объемом для бычьего рынка.
-    """
-    # Объемное подтверждение тренда - более чувствительное к росту
+
+def validate_volume_confirmation(data):
+    # CHANGED FOR SCALPING
     data['volume_trend_conf'] = np.where(
-        (data['close'] > data['close'].shift(1)) & 
-        (data['volume'] > data['volume'].rolling(10).mean()),  # Уменьшенное окно для быстрой реакции
-        2,  # Усиленный сигнал для роста
+        (data['close'] > data['close'].shift(1)) &
+        (data['volume'] > data['volume'].rolling(5).mean()),
+        1,
         np.where(
-            (data['close'] < data['close'].shift(1)) & 
-            (data['volume'] > data['volume'].rolling(20).mean()),
+            (data['close'] < data['close'].shift(1)) &
+            (data['volume'] > data['volume'].rolling(5).mean()),
             -1,
             0
         )
     )
-    
-    # Сила объемного подтверждения - с акцентом на рост
-    data['volume_strength'] = (data['volume'] / 
-                             data['volume'].rolling(10).mean() *  # Меньшее окно
-                             np.where(data['volume_trend_conf'] > 0, 1.5, 1.0) *  # Усиление растущих движений
-                             data['volume_trend_conf'])
-    
-    # Накопление объема - с фокусом на последовательный рост
-    data['volume_accumulation'] = data['volume_trend_conf'].rolling(3).sum()  # Меньшее окно
-    
+    data['volume_strength'] = (data['volume'] / data['volume'].rolling(5).mean()) * data['volume_trend_conf']
+    data['volume_accumulation'] = data['volume_trend_conf'].rolling(2).sum()
     return data
 
-
 def remove_noise(data):
-    """
-    Улучшенная фильтрация шума.
-    """
-    # Kalman filter для сглаживания цены
     kf = KalmanFilter(dim_x=2, dim_z=1)
     kf.x = np.array([[data['close'].iloc[0]], [0.]])
     kf.F = np.array([[1., 1.], [0., 1.]])
     kf.H = np.array([[1., 0.]])
     kf.P *= 10
-    kf.R = 5
-    kf.Q = np.array([[0.1, 0.1], [0.1, 0.1]])
-    
+    # CHANGED FOR SCALPING
+    kf.R = 2
+    kf.Q = np.array([[0.1, 0.1],[0.1, 0.1]])  # Понижено для быстрого отклика фильтра
     smoothed_prices = []
     for price in data['close']:
         kf.predict()
         kf.update(price)
         smoothed_prices.append(float(kf.x[0]))
-    
     data['smoothed_close'] = smoothed_prices
-    
-    # Вычисляем "чистые" движения
-    data['clean_returns'] = (data['smoothed_close'].pct_change() * 
-                           (1 - data['is_anomaly']))
-    
     return data
+
 
 def preprocess_market_data(data_dict):
     """
@@ -710,16 +671,40 @@ def get_historical_data(symbols, bullish_periods, interval="1m", save_path="/wor
     return save_path
 
 
-def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="/workspace/data/binance_data_bullish.csv"):
+def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="binance_data_bullish.csv"):
     """
-    Загружает данные для флэтового рынка для заданных символов и периодов.
+    Загружает данные для заданных символов и периодов.
     Если файл save_path уже существует, новые данные объединяются с уже сохранёнными.
     Возвращает словарь, где для каждого символа содержится DataFrame с объединёнными данными.
+    Чтение CSV выполняется по чанкам для снижения нагрузки на память.
     """
-    # Если файл уже существует – читаем существующие данные
+    CHUNK_SIZE = 200000  # размер чанка для чтения CSV
+
+    # Если файл уже существует – читаем существующие данные по чанкам
     if os.path.exists(save_path):
         try:
-            existing_data = pd.read_csv(save_path, index_col=0, parse_dates=True, on_bad_lines='skip')
+            chunks = []
+            for chunk in pd.read_csv(save_path,
+                                     index_col='timestamp',
+                                     parse_dates=['timestamp'],
+                                     on_bad_lines='skip',
+                                     chunksize=CHUNK_SIZE):
+                # Сброс индекса, чтобы гарантировать наличие столбца с датами
+                chunk = chunk.reset_index(drop=False)
+                if 'timestamp' not in chunk.columns:
+                    if 'index' in chunk.columns:
+                        chunk.rename(columns={'index': 'timestamp'}, inplace=True)
+                        logging.info("Столбец 'index' переименован в 'timestamp'.")
+                    else:
+                        raise ValueError("Отсутствует столбец с временными метками.")
+                # Преобразуем столбец 'timestamp' в datetime с utc=True
+                chunk['timestamp'] = pd.to_datetime(chunk['timestamp'], errors='coerce', utc=True)
+                # Удаляем строки с нераспознанными датами
+                chunk = chunk.dropna(subset=['timestamp'])
+                # Устанавливаем 'timestamp' как индекс
+                chunk = chunk.set_index('timestamp')
+                chunks.append(chunk)
+            existing_data = pd.concat(chunks, ignore_index=False)
             logging.info(f"Считаны существующие данные из {save_path}, строк: {len(existing_data)}")
         except Exception as e:
             logging.error(f"Ошибка при чтении существующего файла {save_path}: {e}")
@@ -728,11 +713,10 @@ def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="/works
         existing_data = pd.DataFrame()
 
     all_data = {}  # Словарь для хранения данных по каждому символу
-    logging.info(f"🚀 Начало загрузки данных за заданные периоды для символов: {symbols}")
+    logging.info(f"🚀 Начало загрузки данных для символов: {symbols}")
 
-    # Запускаем загрузку данных параллельно для каждого символа
+    # Загрузка данных параллельно для каждого символа
     with ThreadPoolExecutor(max_workers=4) as executor:
-        # Передаём в get_historical_data параметр save_path, чтобы все загрузки записывались в один файл
         futures = {
             executor.submit(get_historical_data, [symbol], bullish_periods, interval, save_path): symbol
             for symbol in symbols
@@ -740,23 +724,43 @@ def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="/works
         for future in futures:
             symbol = futures[future]
             try:
-                # get_historical_data возвращает путь к файлу с загруженными данными
                 temp_file_path = future.result()
                 if temp_file_path is not None:
-                    # Используем on_bad_lines='skip', чтобы пропустить проблемные строки
-                    new_data = pd.read_csv(temp_file_path, index_col=0, parse_dates=True, on_bad_lines='skip')
+                    # Читаем скачанный файл по чанкам
+                    chunks = []
+                    for chunk in pd.read_csv(temp_file_path,
+                                             index_col='timestamp',
+                                             parse_dates=['timestamp'],
+                                             on_bad_lines='skip',
+                                             chunksize=CHUNK_SIZE):
+                        chunk = chunk.reset_index(drop=False)
+                        if 'timestamp' not in chunk.columns:
+                            if 'index' in chunk.columns:
+                                chunk.rename(columns={'index': 'timestamp'}, inplace=True)
+                                logging.info("Столбец 'index' переименован в 'timestamp' при чтении новых данных.")
+                            else:
+                                raise ValueError("Отсутствует столбец с временными метками в новых данных.")
+                        chunk['timestamp'] = pd.to_datetime(chunk['timestamp'], errors='coerce', utc=True)
+                        chunk = chunk.dropna(subset=['timestamp'])
+                        chunk = chunk.set_index('timestamp')
+                        chunks.append(chunk)
+                    if chunks:
+                        new_data = pd.concat(chunks, ignore_index=False)
+                    else:
+                        new_data = pd.DataFrame()
+                    
                     if symbol in all_data:
                         all_data[symbol].append(new_data)
                     else:
                         all_data[symbol] = [new_data]
-                    logging.info(f"✅ Данные добавлены для {symbol}. Текущий список: {len(all_data[symbol])} файлов.")
+                    logging.info(f"✅ Данные добавлены для {symbol}. Файлов: {len(all_data[symbol])}")
             except Exception as e:
                 logging.error(f"❌ Ошибка загрузки данных для {symbol}: {e}")
 
-    # Объединяем данные для каждого символа, если список не пустой
+    # Объединяем данные для каждого символа
     for symbol in list(all_data.keys()):
         if all_data[symbol]:
-            all_data[symbol] = pd.concat(all_data[symbol])
+            all_data[symbol] = pd.concat(all_data[symbol], ignore_index=False)
         else:
             del all_data[symbol]
 
@@ -766,19 +770,36 @@ def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="/works
     else:
         new_combined = pd.DataFrame()
 
-    # Объединяем с уже существующими данными (если таковые имеются)
+    # Объединяем с уже существующими данными (если имеются)
     if not existing_data.empty:
         combined = pd.concat([existing_data, new_combined], ignore_index=False)
     else:
         combined = new_combined
 
-    # Сохраняем итоговый объединённый DataFrame в единый CSV-файл
-    combined.to_csv(save_path)
+    # --- Обработка временных меток ---
+    # Сбросим индекс, чтобы гарантировать наличие столбца с датами
+    combined = combined.reset_index(drop=False)
+    if 'timestamp' not in combined.columns:
+        if 'index' in combined.columns:
+            combined.rename(columns={'index': 'timestamp'}, inplace=True)
+            logging.info("Столбец 'index' переименован в 'timestamp' при окончательном объединении.")
+        else:
+            logging.error("Не найден столбец 'timestamp' или 'index' в итоговых данных!")
+            raise ValueError("Отсутствует столбец с временными метками.")
+    combined['timestamp'] = pd.to_datetime(combined['timestamp'], errors='coerce', utc=True)
+    combined = combined.dropna(subset=['timestamp'])
+    combined = combined.set_index('timestamp')
+
+    if not isinstance(combined.index, pd.DatetimeIndex):
+        logging.error(f"После преобразования итоговый индекс имеет тип: {type(combined.index)}")
+        raise ValueError("Индекс не является DatetimeIndex.")
+    else:
+        logging.info("Индекс успешно преобразован в DatetimeIndex.")
+
+    # Сохраняем итоговый DataFrame с указанием имени колонки индекса
+    combined.to_csv(save_path, index_label='timestamp')
     logging.info(f"💾 Обновлённые данные сохранены в {save_path} (итоговых строк: {len(combined)})")
-
-    # Возвращаем словарь с данными по каждому символу (обновлёнными только новыми данными)
     return all_data
-
 
 '''def aggregate_to_2min(data):
     """
@@ -911,19 +932,19 @@ def extract_features(data):
     
     # 12. Многоуровневая целевая переменная для бычьего рынка
     data['target'] = np.where(
-        # Сильный сигнал (Buy)
-        (data['returns'].shift(-1) > 0.0005) &    # вместо 0.001
-        (data['close'] < data['sma_10']) &
-        (volume_ratio > 1.1) &                   # вместо 1.2
-        (data['rsi_5'] < 45),                    # вместо 40
+        # Сигнал на короткое движение вверх (2)
+        (data['returns'].shift(-1) > 0.0003) &
+        (data['volume'] > data['volume'].rolling(5).mean()) &  # Объемное подтверждение
+        (data['macd_diff'] > 0) &  # Растущий MACD
+        (data['bb_position'] < 0.5),  # Не вышли за верхнюю границу BB
         2,
         np.where(
-            # Умеренный сигнал (Buy)
-            (data['returns'].shift(-1) > 0.0002) &    # вместо 0.0005
-            (data['micro_trend_strength'] < 0) &
-            (data['volume_trend_conf'] > -0.5),       # смягчённый фильтр
+            # Сигнал на короткую продажу при перекупленности (1)
+            (data['returns'].shift(-1) < -0.0002) &
+            (data['rsi_5'] > 70) &  # Перекупленность
+            (data['bb_position'] > 0.8),  # Верхний уровень BB
             1,
-            0
+            0  # Hold
         )
     )
 
