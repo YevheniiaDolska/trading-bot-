@@ -552,21 +552,24 @@ def load_bearish_data(symbols, bearish_periods, interval="1m", save_path="binanc
                                      parse_dates=['timestamp'],
                                      on_bad_lines='skip',
                                      chunksize=CHUNK_SIZE):
-                # Сброс индекса, чтобы гарантировать наличие столбца с датами
                 chunk = chunk.reset_index(drop=False)
                 if 'timestamp' not in chunk.columns:
                     if 'index' in chunk.columns:
                         chunk.rename(columns={'index': 'timestamp'}, inplace=True)
-                        logging.info("Столбец 'index' переименован в 'timestamp'.")
-                    else:
-                        raise ValueError("Отсутствует столбец с временными метками.")
-                # Преобразуем столбец 'timestamp' в datetime с utc=True
+                # Приведение числовых столбцов к числовому типу
+                numeric_cols = [
+                    "open", "high", "low", "close", "volume",
+                    "quote_asset_volume", "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume"
+                ]
+                for col in numeric_cols:
+                    if col in chunk.columns:
+                        chunk[col] = pd.to_numeric(chunk[col], errors='coerce')
                 chunk['timestamp'] = pd.to_datetime(chunk['timestamp'], errors='coerce', utc=True)
-                # Удаляем строки с нераспознанными датами
                 chunk = chunk.dropna(subset=['timestamp'])
-                # Устанавливаем 'timestamp' как индекс
                 chunk = chunk.set_index('timestamp')
                 chunks.append(chunk)
+
+
             existing_data = pd.concat(chunks, ignore_index=False)
             logging.info(f"Считаны существующие данные из {save_path}, строк: {len(existing_data)}")
         except Exception as e:
@@ -600,13 +603,19 @@ def load_bearish_data(symbols, bearish_periods, interval="1m", save_path="binanc
                         if 'timestamp' not in chunk.columns:
                             if 'index' in chunk.columns:
                                 chunk.rename(columns={'index': 'timestamp'}, inplace=True)
-                                logging.info("Столбец 'index' переименован в 'timestamp' при чтении новых данных.")
-                            else:
-                                raise ValueError("Отсутствует столбец с временными метками в новых данных.")
+                        # Приведение числовых столбцов к числовому типу
+                        numeric_cols = [
+                            "open", "high", "low", "close", "volume",
+                            "quote_asset_volume", "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume"
+                        ]
+                        for col in numeric_cols:
+                            if col in chunk.columns:
+                                chunk[col] = pd.to_numeric(chunk[col], errors='coerce')
                         chunk['timestamp'] = pd.to_datetime(chunk['timestamp'], errors='coerce', utc=True)
                         chunk = chunk.dropna(subset=['timestamp'])
                         chunk = chunk.set_index('timestamp')
                         chunks.append(chunk)
+
                     if chunks:
                         new_data = pd.concat(chunks, ignore_index=False)
                     else:
