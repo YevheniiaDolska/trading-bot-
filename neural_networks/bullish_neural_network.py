@@ -783,6 +783,17 @@ def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="binanc
     logging.info(f"После агрегации данных на 2 минуты: NaN = {data.isna().sum().sum()}")
     return data'''
 
+def convert_df_dtypes(df):
+    # Конвертируем float64 в float32
+    float_cols = df.select_dtypes(include=['float64']).columns
+    for col in float_cols:
+        df[col] = df[col].astype(np.float32)
+    # Конвертируем int64 в int32
+    int_cols = df.select_dtypes(include=['int64']).columns
+    for col in int_cols:
+        df[col] = df[col].astype(np.int32)
+    return df
+
 
 # Извлечение признаков
 def extract_features(data):
@@ -809,6 +820,7 @@ def _extract_features_per_symbol(data):
     for col in ['open', 'high', 'low', 'close', 'volume']:
         data[col] = pd.to_numeric(data[col], errors='coerce').astype(np.float32)
     data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+    data = convert_df_dtypes(data)
 
     # Устанавливаем базовую метку рынка (bullish → 0)
     data['market_type'] = 0
