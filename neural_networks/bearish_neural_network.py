@@ -246,49 +246,95 @@ def preprocess_market_data(data_dict):
 
 # Кастомная функция потерь для медвежьего рынка, ориентированная на минимизацию убытков
 def custom_profit_loss(y_true, y_pred):
+    """
+    Функция потерь, адаптированная для уменьшения количества сигналов «Hold» и
+    стимулирования модели выдавать больше явных сигналов Buy/Sell.
+    
+    Предположения:
+      - y_true: тензор истинных меток, где 0 = Hold, 1 = Buy, 2 = Sell.
+      - y_pred: тензор предсказаний (непрерывный) в диапазоне [0, 1]:
+            < 0.2  => Sell,
+          0.2-0.5 => Hold,
+            > 0.5  => Buy.
+    """
+    # Приводим y_true к float32
     y_true = tf.cast(y_true, dtype=tf.float32)
     
-    # Основная разница
+    # Разница между предсказанием и истинным значением
     diff = y_pred - y_true
     
-    # Логарифмический фактор для усиления больших ошибок (оставляем эту важную часть)
+    # Логарифмический фактор для усиления больших ошибок
     log_factor = tf.math.log1p(tf.abs(diff) + 1e-7)
     
-    # Штрафы для медвежьего рынка на минутном таймфрейме
-    false_long_penalty = 2.5  # Сильный штраф за ложные сигналы покупки
-    false_short_penalty = 1.5  # Умеренный штраф за ложные сигналы продажи
-    missed_drop_penalty = 2.0  # Штраф за пропуск сильного падения
+    # Параметры штрафов (настраиваются эмпирически)
+    # Для случаев, когда истинный класс – Hold (0)
+    false_long_penalty = 1.0   # штраф за ложное срабатывание Buy (если y_true == 0, а y_pred > 0.5)
+    false_short_penalty = 1.0  # штраф за ложное срабатывание Sell (если y_true == 0, а y_pred < 0.2)
     
-    # Расчет потерь с учетом специфики медвежьего рынка
-    loss = tf.where(
-        tf.logical_and(y_true == 0, y_pred > 0.5),  # Ложный сигнал на покупку
-        false_long_penalty * tf.abs(diff) * log_factor,  # Умножаем на log_factor
+    # Для случаев, когда истинный класс – Buy (1) или Sell (2), но модель предсказывает Hold
+    missed_rally_penalty = 2.0  # штраф за пропущенный Buy (если y_true == 1, а y_pred <= 0.5)
+    missed_drop_penalty = 2.0   # штраф за пропущенный Sell (если y_true == 2, а y_pred >= 0.2)
+    
+    # CASE A: Если истинное значение Hold (0)
+    # - Если модель предсказывает >0.5 (Buy) – ложное срабатывание Buy
+    # - Если модель предсказывает <0.2 (Sell) – ложное срабатывание Sell
+    # - Иначе – минимальный штраф
+    loss_hold = tf.where(
+        y_pred > 0.5,
+        false_long_penalty * tf.abs(diff) * log_factor,
         tf.where(
-            tf.logical_and(y_true == 2, y_pred < 0.5),  # Пропуск сильного падения
-            missed_drop_penalty * tf.abs(diff) * log_factor,  # Умножаем на log_factor
-            tf.where(
-                tf.logical_and(y_true == 0, y_pred < 0.2),  # Ложный сигнал на продажу
-                false_short_penalty * tf.abs(diff) * log_factor,  # Умножаем на log_factor
-                tf.abs(diff) * log_factor  # Умножаем на log_factor
-            )
+            y_pred < 0.2,
+            false_short_penalty * tf.abs(diff) * log_factor,
+            tf.abs(diff) * log_factor
         )
     )
     
-    # Добавляем штраф за неуверенные предсказания
+    # CASE B: Если истинное значение Buy (1)
+    # - Если модель предсказывает значение <= 0.5 (то есть попадает в Hold или Sell) – штраф за пропущенный сигнал Buy
+    loss_buy = tf.where(
+        y_pred <= 0.5,
+        missed_rally_penalty * tf.abs(diff) * log_factor,
+        tf.abs(diff) * log_factor
+    )
+    
+    # CASE C: Если истинное значение Sell (2)
+    # - Если модель предсказывает значение >= 0.2 (то есть попадает в Hold или Buy) – штраф за пропущенный сигнал Sell
+    loss_sell = tf.where(
+        y_pred >= 0.2,
+        missed_drop_penalty * tf.abs(diff) * log_factor,
+        tf.abs(diff) * log_factor
+    )
+    
+    # Объединяем случаи по условию y_true
+    base_loss = tf.where(
+        tf.equal(y_true, 0.0),
+        loss_hold,
+        tf.where(
+            tf.equal(y_true, 1.0),
+            loss_buy,
+            loss_sell
+        )
+    )
+    
+    # Штраф за неуверенные предсказания: если y_pred находится между 0.3 и 0.7, добавляем штраф
     uncertainty_penalty = tf.where(
         tf.logical_and(y_pred > 0.3, y_pred < 0.7),
-        0.5 * tf.abs(diff) * log_factor,  # Умножаем на log_factor
+        0.5 * tf.abs(diff) * log_factor,
         0.0
     )
     
-    # Добавить штраф за задержку реакции
+    # Штраф за задержку реакции: учитываем, что модель должна быстрее реагировать
     time_penalty = 0.1 * tf.abs(diff) * tf.cast(tf.range(tf.shape(diff)[0]), tf.float32) / tf.cast(tf.shape(diff)[0], tf.float32)
     
-    # Добавить компонент для учета транзакционных издержек
+    # Штраф за транзакционные издержки: учитываем резкие изменения предсказаний между соседними точками
     transaction_cost = 0.001 * tf.reduce_sum(tf.abs(y_pred[1:] - y_pred[:-1]))
     
-    total_loss = tf.reduce_mean(loss + uncertainty_penalty)
+    # Общая потеря: сумма базового штрафа, штрафа за неуверенность и задержку реакции,
+    # плюс транзакционные издержки (которые добавляются после усреднения по батчу)
+    total_loss = tf.reduce_mean(base_loss + uncertainty_penalty + time_penalty) + transaction_cost
+    
     return total_loss
+
 
 # Attention Layer
 class AttentionLayer(tf.keras.layers.Layer):
@@ -777,13 +823,13 @@ def extract_features(data):
 
     # Создание целевой переменной с использованием ранее вычисленных индикаторов
     data['target'] = np.where(
-        (returns.shift(-1) < -0.0003) &  # Порог для падения
+        (returns.shift(-1) < -0.0001) &  # Порог для падения
         (volume_ratio > 1.1) &
         (price_acceleration < 0) &
         (data['macd_diff'] < 0),          # Подтверждение по MACD
         2,
         np.where(
-            (returns.shift(-1) > 0.0004) &  # Порог для отскока
+            (returns.shift(-1) > 0.0002) &  # Порог для отскока
             (data['rsi_5'] < 30) &           # Перепроданность
             (data['bb_position'] < 0.2),      # Цена в нижней части полос Боллинджера
             1,
