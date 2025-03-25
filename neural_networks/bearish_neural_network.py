@@ -733,30 +733,30 @@ def extract_features(data):
     data = data.copy()
     data = remove_noise(data)
 
-    # Вычисляем базовые показатели
+    # Базовые расчёты
     returns = data['close'].pct_change()
     volume_ratio = data['volume'] / data['volume'].rolling(10).mean()
     price_acceleration = returns.diff()  # Скорость изменения цены
 
-    # Вычисляем индикаторы, необходимые для расчёта целевой переменной
-    # MACD
+    # Вычисление индикаторов, необходимых для целевой переменной
+    # MACD и связанные показатели
     macd = MACD(data['smoothed_close'], window_slow=26, window_fast=12, window_sign=9)
     data['macd'] = macd.macd()
     data['macd_signal'] = macd.macd_signal()
     data['macd_diff'] = data['macd'] - data['macd_signal']
     data['macd_slope'] = data['macd_diff'].diff()
     
-    # RSI с окном 5
+    # RSI с окном 5 для условий перепроданности
     data['rsi_5'] = RSIIndicator(data['close'], window=5).rsi()
     
-    # Bollinger Bands
+    # Bollinger Bands для определения положения цены относительно полос
     bb = BollingerBands(data['smoothed_close'], window=20)
     data['bb_high'] = bb.bollinger_hband()
     data['bb_low'] = bb.bollinger_lband()
     data['bb_width'] = bb.bollinger_wband()
     data['bb_position'] = (data['close'] - data['bb_low']) / (data['bb_high'] - data['bb_low'])
 
-    # Динамические пороги на основе волатильности (функция, которая сохраняет исходную логику)
+    # Динамические пороги на основе волатильности
     def calculate_dynamic_thresholds(window=10):
         volatility = returns.rolling(window).std()
         avg_volatility = volatility.rolling(100).mean()  # Долгосрочная средняя волатильность
@@ -775,9 +775,9 @@ def extract_features(data):
 
     strong_threshold, medium_threshold = calculate_dynamic_thresholds()
 
-    # Создание целевой переменной с использованием вычисленных индикаторов
+    # Создание целевой переменной с использованием ранее вычисленных индикаторов
     data['target'] = np.where(
-        (returns.shift(-1) < -0.0003) &  # Уменьшенный порог для частых сигналов
+        (returns.shift(-1) < -0.0003) &  # Порог для падения
         (volume_ratio > 1.1) &
         (price_acceleration < 0) &
         (data['macd_diff'] < 0),          # Подтверждение по MACD
@@ -785,7 +785,7 @@ def extract_features(data):
         np.where(
             (returns.shift(-1) > 0.0004) &  # Порог для отскока
             (data['rsi_5'] < 30) &           # Перепроданность
-            (data['bb_position'] < 0.2),      # Нижний уровень полос Боллинджера
+            (data['bb_position'] < 0.2),      # Цена в нижней части полос Боллинджера
             1,
             0  # Hold
         )
@@ -795,13 +795,13 @@ def extract_features(data):
     data['returns'] = returns
     data['log_returns'] = np.log(data['close'] / data['close'].shift(1))
 
-    # Анализ объемов и давления продаж
+    # Анализ объёма и давления продаж
     data['volume_ma'] = data['volume'].rolling(10).mean()
     data['volume_ratio'] = data['volume'] / data['volume_ma']
     data['selling_pressure'] = data['volume'] * (data['close'] - data['open']).abs() * \
-                              np.where(data['close'] < data['open'], 1, 0)
+                               np.where(data['close'] < data['open'], 1, 0)
     data['buying_pressure'] = data['volume'] * (data['close'] - data['open']).abs() * \
-                             np.where(data['close'] > data['open'], 1, 0)
+                              np.where(data['close'] > data['open'], 1, 0)
     data['pressure_ratio'] = data['selling_pressure'] / data['buying_pressure'].replace(0, 1)
 
     # Динамические индикаторы волатильности
@@ -809,12 +809,12 @@ def extract_features(data):
     data['volatility_ma'] = data['volatility'].rolling(20).mean()
     data['volatility_ratio'] = data['volatility'] / data['volatility_ma']
 
-    # Трендовые индикаторы с адаптивными периодами (числа Фибоначчи)
+    # Трендовые индикаторы с адаптивными периодами (например, Фибоначчи)
     for period in [3, 5, 8, 13, 21]:
         data[f'sma_{period}'] = SMAIndicator(data['smoothed_close'], window=period).sma_indicator()
         data[f'ema_{period}'] = data['smoothed_close'].ewm(span=period, adjust=False).mean()
 
-    # Объемные индикаторы с фокусом на медвежий рынок
+    # Объёмные индикаторы
     data['obv'] = OnBalanceVolumeIndicator(data['close'], data['volume']).on_balance_volume()
     data['cmf'] = ChaikinMoneyFlowIndicator(data['high'], data['low'], data['close'], data['volume']).chaikin_money_flow()
     data['volume_change'] = data['volume'].pct_change()
@@ -847,7 +847,14 @@ def extract_features(data):
     data['price_acceleration'] = returns.diff()
     data['volume_acceleration'] = data['volume_change'].diff()
 
-    # ATR индикаторы с разными периодами
+    # Пересчёт Bollinger Bands (для дополнительной проверки)
+    bb = BollingerBands(data['smoothed_close'], window=20)
+    data['bb_high'] = bb.bollinger_hband()
+    data['bb_low'] = bb.bollinger_lband()
+    data['bb_width'] = bb.bollinger_wband()
+    data['bb_position'] = (data['close'] - data['bb_low']) / (data['bb_high'] - data['bb_low'])
+
+    # ATR индикаторы для оценки волатильности
     for period in [5, 10, 20]:
         data[f'atr_{period}'] = AverageTrueRange(
             data['high'], data['low'], data['close'], window=period
@@ -861,11 +868,15 @@ def extract_features(data):
     data['micro_trend_sum'] = data['micro_trend'].rolling(5).sum()
     data['volume_acceleration_5m'] = (data['volume'].diff() / data['volume'].rolling(5).mean()).fillna(0)
 
+    # Если столбец clean_returns отсутствует, вычисляем его на основе smoothed_close
+    if 'clean_returns' not in data.columns:
+        data['clean_returns'] = data['smoothed_close'].pct_change()
+
     # Признаки для определения силы медвежьего движения
     data['bearish_strength'] = np.where(
-        (data['close'] < data['open']) &
-        (data['volume'] > data['volume'].rolling(20).mean() * 1.5) &
-        (data['close'] == data['low']) &
+        (data['close'] < data['open']) & 
+        (data['volume'] > data['volume'].rolling(20).mean() * 1.5) & 
+        (data['close'] == data['low']) & 
         (data['clean_returns'] < 0),
         3,
         np.where(
@@ -885,7 +896,7 @@ def extract_features(data):
         if col not in ['market_type']:
             features[col] = data[col]
 
-    # Добавляем межмонетные признаки, если они есть
+    # Добавляем межмонетные признаки, если они имеются
     if 'btc_corr' in data.columns:
         features['btc_corr'] = data['btc_corr']
     if 'rel_strength_btc' in data.columns:
@@ -893,13 +904,13 @@ def extract_features(data):
     if 'beta_btc' in data.columns:
         features['beta_btc'] = data['beta_btc']
 
-    # Признаки подтверждения объемом, если они есть
+    # Признаки подтверждения объёмом, если они имеются
     if 'volume_strength' in data.columns:
         features['volume_strength'] = data['volume_strength']
     if 'volume_accumulation' in data.columns:
         features['volume_accumulation'] = data['volume_accumulation']
 
-    # Очищенные от шума признаки, если они есть
+    # Очищенные от шума признаки, если они имеются
     if 'clean_returns' in data.columns:
         features['clean_returns'] = data['clean_returns']
 
@@ -916,6 +927,7 @@ def extract_features(data):
         data.fillna(0, inplace=True)
 
     return features_df.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+
 
 
 
