@@ -291,65 +291,74 @@ def preprocess_market_data(data_dict):
 # Кастомная функция потерь для бычьего рынка, ориентированная на прибыль
 def custom_profit_loss(y_true, y_pred):
     """
-    Универсальная функция потерь для максимизации прибыли и минимизации убытков,
-    с сохранением «разницы» (diff = y_pred - y_true).
-
-    Здесь y_true ∈ {-1, 0, +1}, где:
-       -1 -> SELL,
-        0 -> HOLD,
-       +1 -> BUY
-
-    y_pred ∈ [-1, +1], выход модели (например, Dense(1, activation='tanh')).
-
-    Логика:
-
-      diff = y_pred - y_true
-      log_factor = log1p(|diff|)
-      underestimation_penalty = (когда y_true > y_pred) -> (y_true - y_pred)**2
-      overestimation_penalty  = (когда y_true < y_pred) -> (y_pred - y_true)**2
-      gain = max(diff, 0)
-      loss = abs(min(diff, 0))
-
-    Условные коэффициенты умножения:
-      - loss * 2 (усиленный акцент на убытках)
-      - log_factor * 1.5 (подсвечиваем большие ошибки)
-      - underestimation_penalty * 3 (штраф за упущенную прибыль)
-      - gain * 1.5 (стимул к получению прибыли)
-      - overestimation_penalty * 2 (штраф за переоценку падения)
+    Функция потерь, адаптированная для уменьшения количества сигналов HOLD и
+    стимулирования модели выдавать больше явных сигналов BUY/SELL на бычьем рынке.
+    
+    Предположения:
+      - y_true: тензор истинных меток, где 0 = HOLD, 1 = BUY, 2 = SELL.
+      - y_pred: тензор предсказаний (непрерывный) в диапазоне [0, 1]:
+            < 0.2  => SELL,
+         > 0.7  => BUY,
+         между 0.2 и 0.7 => HOLD.
     """
-    # Убедимся, что y_true и y_pred — float
     y_true = tf.cast(y_true, dtype=tf.float32)
     y_pred = tf.cast(y_pred, dtype=tf.float32)
-
-    # diff = (предсказанное значение) - (истинное значение)
     diff = y_pred - y_true
-
-    # Логарифмический фактор, усиливающий большие ошибки
     log_factor = tf.math.log1p(tf.abs(diff) + 1e-7)
     
-    # Штраф за «недооценку» (когда y_true>y_pred)
-    underestimation_penalty = tf.where(y_true > y_pred, (y_true - y_pred) ** 2, 0.0)
-
-    # Штраф за «переоценку» (когда y_true<y_pred)
-    overestimation_penalty = tf.where(y_true < y_pred, (y_pred - y_true) ** 2, 0.0)
-
-    # «Прибыль» (gain), когда diff>0
-    gain = tf.math.maximum(diff, 0.0)
-
-    # «Убыток» (loss), когда diff<0
-    loss = tf.math.abs(tf.math.minimum(diff, 0.0))
-
-    # Итоговая функция потерь: сумма всех частей
-    total_loss_per_sample = (
-          loss * 2.0                # Усиленный акцент на убытках
-        + log_factor * 1.5          # Подсвечиваем большие ошибки
-        + underestimation_penalty * 3.0
-        - gain * 1.5                # Стимул к получению прибыли (вычитаем за положит. diff)
-        + overestimation_penalty * 2.0
+    # Для истинного класса HOLD (0):
+    # Если y_pred попадает в интервал HOLD (0.2 - 0.7), штраф увеличивается (2.0×),
+    # а если предсказано экстремальное значение, штраф уменьшается (0.5×).
+    loss_hold = tf.where(
+        y_pred > 0.7,
+        0.5 * tf.abs(diff) * log_factor,
+        tf.where(
+            y_pred < 0.2,
+            0.5 * tf.abs(diff) * log_factor,
+            2.0 * tf.abs(diff) * log_factor
+        )
     )
-
-    # Усредняем по батчу
-    return tf.reduce_mean(total_loss_per_sample)
+    
+    # Для истинного класса BUY (1): если y_pred не превышает 0.7, применяем повышенный штраф (3.0×)
+    loss_buy = tf.where(
+        y_pred <= 0.7,
+        3.0 * tf.abs(diff) * log_factor,
+        tf.abs(diff) * log_factor
+    )
+    
+    # Для истинного класса SELL (2): если y_pred не ниже 0.2, применяем повышенный штраф (3.0×)
+    loss_sell = tf.where(
+        y_pred >= 0.2,
+        3.0 * tf.abs(diff) * log_factor,
+        tf.abs(diff) * log_factor
+    )
+    
+    # Объединяем случаи по значению y_true (0: HOLD, 1: BUY, 2: SELL)
+    base_loss = tf.where(
+        tf.equal(y_true, 0.0),
+        loss_hold,
+        tf.where(
+            tf.equal(y_true, 1.0),
+            loss_buy,
+            loss_sell
+        )
+    )
+    
+    # Штраф за неуверенные предсказания: если y_pred находится в промежутке [0.3, 0.7], добавляем дополнительный штраф (коэффициент 1.0)
+    uncertainty_penalty = tf.where(
+        tf.logical_and(y_pred > 0.3, y_pred < 0.7),
+        1.0 * tf.abs(diff) * log_factor,
+        0.0
+    )
+    
+    # Штраф за задержку реакции: небольшое увеличение штрафа с ростом номера примера
+    time_penalty = 0.1 * tf.abs(diff) * (tf.cast(tf.range(tf.shape(diff)[0]), tf.float32) / tf.cast(tf.shape(diff)[0], tf.float32))
+    
+    # Штраф за транзакционные издержки: учитываем резкие изменения предсказаний между соседними точками
+    transaction_cost = 0.001 * tf.reduce_sum(tf.abs(y_pred[1:] - y_pred[:-1]))
+    
+    total_loss = tf.reduce_mean(base_loss + uncertainty_penalty + time_penalty) + transaction_cost
+    return total_loss
 
 
 
@@ -791,179 +800,120 @@ def extract_features(data):
 
 def _extract_features_per_symbol(data):
     """
-    Извлечение признаков для одного символа.
+    Извлечение признаков для одного символа с обязательным приведением ключевых столбцов к числовому типу,
+    вычислением ряда технических индикаторов и изменённой логикой формирования целевой переменной,
+    чтобы давалось меньше сигналов HOLD и больше BUY/SELL.
     """
-    data['market_type'] = 0
-    logging.info("Извлечение признаков для бычьего рынка")
+    # Копируем данные и принудительно приводим ключевые столбцы к числовому типу с заполнением пропусков
     data = data.copy()
-    
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        data[col] = pd.to_numeric(data[col], errors='coerce').astype(np.float32)
+    data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+
+    # Устанавливаем базовую метку рынка (bullish → 0)
+    data['market_type'] = 0
+
     # 1. Базовые метрики доходности и импульса
     data['returns'] = data['close'].pct_change()
-    data['log_returns'] = np.log(data['close'] / data['close'].shift(1))
+    data['log_returns'] = np.log(data['close'] / data['close'].shift(1) + 1e-7)
     data['momentum_1m'] = data['close'].diff(1)
     data['momentum_3m'] = data['close'].diff(3)
     data['acceleration'] = data['momentum_1m'].diff()
-    
+
     # 2. Расчет динамических порогов на основе волатильности
     volatility = data['returns'].rolling(20).std()
     volume_volatility = data['volume'].pct_change().rolling(20).std()
-    
-    # Базовые пороги для бычьего рынка
-    base_strong = 0.001  # 0.1%
-    base_medium = 0.0005  # 0.05%
-    
-    # Корректировка порогов
-    strong_threshold = base_strong * (1 + volatility/volatility.mean())
-    medium_threshold = base_medium * (1 + volatility/volatility.mean())
-    volume_factor = 1 + (volume_volatility/volume_volatility.mean())
-    
+    base_strong = 0.001  # базовый порог для сильного движения
+    base_medium = 0.0005
+    strong_threshold = base_strong * (1 + volatility / (volatility.mean() + 1e-7))
+    medium_threshold = base_medium * (1 + volatility / (volatility.mean() + 1e-7))
+    volume_factor = 1 + (volume_volatility / (volume_volatility.mean() + 1e-7))
+
     # 3. Объемные показатели для определения силы движения
     data['volume_delta'] = data['volume'].diff()
     data['volume_momentum'] = data['volume'].diff().rolling(3).sum()
-    volume_ratio = data['volume'] / data['volume'].rolling(5).mean() * volume_factor
-    
+    volume_ratio = data['volume'] / (data['volume'].rolling(5).mean() * volume_factor + 1e-7)
+
     # 4. Быстрые трендовые индикаторы для HFT
     data['sma_2'] = SMAIndicator(data['close'], window=2).sma_indicator()
     data['sma_3'] = SMAIndicator(data['close'], window=3).sma_indicator()
     data['sma_10'] = SMAIndicator(data['close'], window=10).sma_indicator()
     data['ema_3'] = data['close'].ewm(span=3, adjust=False).mean()
     data['ema_5'] = data['close'].ewm(span=5, adjust=False).mean()
-    
+
     # 5. Микро-тренды для HFT
     data['micro_trend'] = np.where(
         data['close'] > data['close'].shift(1), 1,
         np.where(data['close'] < data['close'].shift(1), -1, 0)
     )
     data['micro_trend_strength'] = data['micro_trend'].rolling(3).sum()
-    
+
     # 6. Быстрый MACD для 1-минутных свечей
     macd = MACD(data['close'], window_slow=12, window_fast=6, window_sign=3)
     data['macd'] = macd.macd()
     data['macd_signal'] = macd.macd_signal()
     data['macd_diff'] = data['macd'] - data['macd_signal']
     data['macd_acceleration'] = data['macd_diff'].diff()
-    
+
     # 7. Короткие осцилляторы
     data['rsi_5'] = RSIIndicator(data['close'], window=5).rsi()
     data['rsi_3'] = RSIIndicator(data['close'], window=3).rsi()
     stoch = StochasticOscillator(data['high'], data['low'], data['close'], window=5)
     data['stoch_k'] = stoch.stoch()
     data['stoch_d'] = stoch.stoch_signal()
-    
-    # 8. Волатильность для оценки рисков
+
+    # 8. Волатильность для оценки рисков и вычисление позиции в Bollinger Bands
     bb = BollingerBands(data['close'], window=10)
     data['bb_width'] = bb.bollinger_wband()
+    # Вычисляем bb_position как нормированное положение цены между нижней и верхней границей
+    data['bb_position'] = (data['close'] - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-7)
     data['atr_3'] = AverageTrueRange(data['high'], data['low'], data['close'], window=3).average_true_range()
-    
+
     # 9. Свечной анализ
     data['candle_body'] = data['close'] - data['open']
-    data['body_ratio'] = abs(data['candle_body']) / (data['high'] - data['low'])
+    data['body_ratio'] = np.abs(data['candle_body']) / (data['high'] - data['low'] + 1e-7)
     data['upper_wick'] = data['high'] - np.maximum(data['open'], data['close'])
     data['lower_wick'] = np.minimum(data['open'], data['close']) - data['low']
-    
+
     # 10. Объемные индикаторы
     data['obv'] = OnBalanceVolumeIndicator(data['close'], data['volume']).on_balance_volume()
-    data['volume_trend'] = data['volume'].diff() / data['volume'].shift(1)
+    data['volume_trend'] = data['volume'].diff() / (data['volume'].shift(1) + 1e-7)
 
-    
     # 11. Индикаторы ускорения для HFT
     data['price_acceleration'] = data['returns'].diff()
     data['volume_acceleration'] = data['volume_delta'].diff()
-    
-    # Проверяем, есть ли уже столбец 'volume_trend_conf'
-    if 'volume_trend_conf' in data.columns:
-        logging.warning("Внимание: 'volume_trend_conf' уже существует, пересчитываем...")
 
-    # Добавляем подтверждение объемом (создаёт volume_trend_conf)
-    logging.info("Добавляем признаки объёмного подтверждения тренда...")
+    # Добавляем подтверждение объемом (создаётся volume_trend_conf)
     data = validate_volume_confirmation(data)
+    # Если имеются пропуски в volume_trend_conf, заполняем их нулями
+    data['volume_trend_conf'] = data['volume_trend_conf'].fillna(0)
 
-    # Проверяем, создался ли столбец 'volume_trend_conf'
-    if 'volume_trend_conf' not in data.columns:
-        logging.error("Ошибка! 'volume_trend_conf' отсутствует после вызова validate_volume_confirmation!")
-        raise ValueError("Признак 'volume_trend_conf' отсутствует!")
-
-    # Проверяем на NaN и заполняем их
-    nan_count = data['volume_trend_conf'].isna().sum()
-    if nan_count > 0:
-        logging.warning(f"'volume_trend_conf' содержит {nan_count} NaN, заполняем нулями.")
-        data['volume_trend_conf'].fillna(0, inplace=True)
-
-    # 12. Многоуровневая целевая переменная для бычьего рынка
-    logging.info("Рассчитываем целевую переменную 'target'...")
-    # Вычисляем будущую доходность (future returns) как относительное изменение цены
+    # 12. Многоуровневая целевая переменная для бычьего рынка:
+    # Изменённая логика: пороги снижены для выдачи большего количества сигналов BUY/SELL.
+    # Если будущая доходность > 0.0001 и есть объемное подтверждение и растущий MACD, то BUY (1).
+    # Если будущая доходность < -0.0001 и показатели перекупленности (RSI>60) и высокая позиция BB, то SELL (2).
+    # В остальных случаях – HOLD (0).
     future_returns = data['close'].shift(-1) / data['close'] - 1
-
-    # Удаляем последнюю строку, где future_returns равен NaN
     data = data.iloc[:-1]
     future_returns = future_returns.iloc[:-1]
-
-    # Определяем пороги по квантилям для разделения на три класса:
-    # Класс 2 (Buy) – топ 33% будущих доходностей,
-    # Класс 0 (Sell) – нижние 33% будущих доходностей,
-    # Класс 1 (Hold) – промежуточное значение.
-    pct_33 = future_returns.quantile(0.33)
-    pct_66 = future_returns.quantile(0.66)
-
-    # Замените существующую логику целевой переменной:
     data['target'] = np.where(
-        # Сигнал на короткое движение вверх (2)
-        (data['returns'].shift(-1) > 0.0003) &
-        (data['volume'] > data['volume'].rolling(5).mean()) &  # Объемное подтверждение
-        (data['macd_diff'] > 0) &  # Растущий MACD
-        (data['bb_position'] < 0.5),  # Не вышли за верхнюю границу BB
-        2,
+        (future_returns > 0.0001) &
+        (data['volume'] > data['volume'].rolling(5).mean()) &
+        (data['macd_diff'] > 0) &
+        (data['bb_position'] < 0.6),
+        1,  # BUY
         np.where(
-            # Сигнал на короткую продажу при перекупленности (1)
-            (data['returns'].shift(-1) < -0.0002) &
-            (data['rsi_5'] > 70) &  # Перекупленность
-            (data['bb_position'] > 0.8),  # Верхний уровень BB
-            1,
-            0  # Hold
+            (future_returns < -0.0001) &
+            (data['rsi_5'] > 60) &
+            (data['bb_position'] > 0.4),
+            2,  # SELL
+            0   # HOLD
         )
     )
 
-    # Дополнительное логирование для проверки распределения классов
-    print("Распределение целевых классов:")
-    print(data['target'].value_counts())
-
-
-    # Логируем финальный список признаков
-    logging.info(f"Финальные признаки: {list(data.columns)}")
-
-    # Проверяем финальное распределение таргета
-    logging.info(f"Распределение 'target':\n{data['target'].value_counts()}")
-    
-     # Создаем словарь признаков
-    features = {}
-    
-    # Базовые признаки (все, что уже рассчитано)
-    for col in data.columns:
-        if col not in ['target', 'market_type']:
-            features[col] = data[col]
-    
-    # Добавляем межмонетные признаки, если они есть
-    if 'btc_corr' in data.columns:
-        features['btc_corr'] = data['btc_corr']
-    if 'rel_strength_btc' in data.columns:
-        features['rel_strength_btc'] = data['rel_strength_btc']
-    if 'beta_btc' in data.columns:
-        features['beta_btc'] = data['beta_btc']
-            
-    # Добавляем признаки подтверждения объемом, если они есть
-    if 'volume_strength' in data.columns:
-        features['volume_strength'] = data['volume_strength']
-    if 'volume_accumulation' in data.columns:
-        features['volume_accumulation'] = data['volume_accumulation']
-    
-    # Добавляем очищенные от шума признаки, если они есть
-    if 'clean_returns' in data.columns:
-        features['clean_returns'] = data['clean_returns']
-        
-    # Преобразуем признаки в DataFrame
-    features_df = pd.DataFrame(features)
-    
+    # Возвращаем данные с заполнением бесконечностей и пропусков
     return data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+
 
 
 def remove_outliers(data):
