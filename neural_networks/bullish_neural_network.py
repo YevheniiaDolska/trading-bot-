@@ -147,7 +147,7 @@ def check_feature_quality(X, y):
         raise ValueError("X не содержит числовых признаков после фильтрации. Проверьте исходные данные.")
 
     # Заполняем NaN медианными значениями
-    X = X.fillna(X.median())
+    X = X.fillna(X.median()).dropna()
     X = X.to_numpy(dtype=np.float32)
 
     logging.info(f"Количество оставшихся пропущенных значений в X: {np.isnan(X).sum()}")
