@@ -1073,6 +1073,13 @@ def build_bullish_neural_network(data):
     X = data[features].apply(pd.to_numeric, errors='coerce')
     y = data['target'].values
     
+    # Удаляем колонки, которые целиком состоят из NaN
+    X = X.loc[:, ~X.isna().all()]
+
+    # Заполняем оставшиеся NaN медианными значениями
+    imputer = SimpleImputer(strategy='median')
+    X = imputer.fit_transform(X)
+    
     # Контроль качества признаков: вычисляем SelectKBest и логируем топ-10 признаков
     check_feature_quality(X, y)
     
