@@ -42,6 +42,7 @@ import joblib
 from xgboost import XGBClassifier
 from filterpy.kalman import KalmanFilter
 from utils_output import ensure_directory, copy_output, save_model_output
+from sklearn.impute import SimpleImputer
 
 
 # Создаем необходимые директории
@@ -119,7 +120,6 @@ def check_feature_quality(X, y):
     logging.info("Проверка качества признаков...")
     logging.info(f"Форма X: {X.shape}")
 
-    # Если X — DataFrame, пробуем привести все столбцы к числовому типу
     if isinstance(X, pd.DataFrame):
         logging.info("X представлен в виде DataFrame.")
         for col in X.columns:
@@ -136,7 +136,7 @@ def check_feature_quality(X, y):
         logging.error(f"Ошибка: X имеет неизвестный тип: {type(X)}. Ожидается DataFrame или NumPy массив.")
         raise ValueError(f"Ошибка: Неверный формат данных X ({type(X)})")
 
-    # Удаляем нечисловые колонки (те, которые не удалось преобразовать и содержат только NaN)
+    # Удаляем нечисловые колонки
     non_numeric_cols = X.columns[X.dtypes == 'object'].tolist()
     if non_numeric_cols:
         logging.warning(f"Удаляем нечисловые колонки: {non_numeric_cols}")
@@ -146,9 +146,11 @@ def check_feature_quality(X, y):
         logging.error("Ошибка: В X не осталось числовых колонок после удаления нечисловых данных!")
         raise ValueError("X не содержит числовых признаков после фильтрации. Проверьте исходные данные.")
 
-    # Заполняем NaN медианными значениями
-    X = X.fillna(X.median()).dropna()
-    X = X.to_numpy(dtype=np.float32)
+    # Заполняем пропуски медианными значениями с помощью SimpleImputer,
+    # чтобы не терять все строки, как это делает dropna()
+    imputer = SimpleImputer(strategy='median')
+    X = imputer.fit_transform(X)
+    X = X.astype(np.float32)
 
     logging.info(f"Количество оставшихся пропущенных значений в X: {np.isnan(X).sum()}")
 
