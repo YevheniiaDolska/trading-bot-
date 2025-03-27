@@ -857,97 +857,112 @@ def log_class_distribution(y, stage):
 def extract_features(data):
     logging.info("Извлечение признаков для бычьего рынка")
     data = data.copy()
-    
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        data[col] = pd.to_numeric(data[col], errors='coerce').astype(np.float32)
+    data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+
+    # Устанавливаем базовую метку рынка (bullish → 0)
+    data['market_type'] = 0
+
     # 1. Базовые метрики доходности и импульса
     data['returns'] = data['close'].pct_change()
-    data['log_returns'] = np.log(data['close'] / data['close'].shift(1))
+    data['log_returns'] = np.log(data['close'] / data['close'].shift(1) + 1e-7)
     data['momentum_1m'] = data['close'].diff(1)
     data['momentum_3m'] = data['close'].diff(3)
     data['acceleration'] = data['momentum_1m'].diff()
-    
+
     # 2. Расчет динамических порогов на основе волатильности
     volatility = data['returns'].rolling(20).std()
     volume_volatility = data['volume'].pct_change().rolling(20).std()
-    
-    # Базовые пороги для бычьего рынка
-    base_strong = 0.001  # 0.1%
-    base_medium = 0.0005  # 0.05%
-    
-    # Корректировка порогов
-    strong_threshold = base_strong * (1 + volatility/volatility.mean())
-    medium_threshold = base_medium * (1 + volatility/volatility.mean())
-    volume_factor = 1 + (volume_volatility/volume_volatility.mean())
-    
+    base_strong = 0.001  # базовый порог для сильного движения
+    base_medium = 0.0005
+    strong_threshold = base_strong * (1 + volatility / (volatility.mean() + 1e-7))
+    medium_threshold = base_medium * (1 + volatility / (volatility.mean() + 1e-7))
+    volume_factor = 1 + (volume_volatility / (volume_volatility.mean() + 1e-7))
+
     # 3. Объемные показатели для определения силы движения
     data['volume_delta'] = data['volume'].diff()
     data['volume_momentum'] = data['volume'].diff().rolling(3).sum()
-    volume_ratio = data['volume'] / data['volume'].rolling(5).mean() * volume_factor
-    
+    volume_ratio = data['volume'] / (data['volume'].rolling(5).mean() * volume_factor + 1e-7)
+
     # 4. Быстрые трендовые индикаторы для HFT
     data['sma_2'] = SMAIndicator(data['close'], window=2).sma_indicator()
     data['sma_3'] = SMAIndicator(data['close'], window=3).sma_indicator()
     data['sma_10'] = SMAIndicator(data['close'], window=10).sma_indicator()
     data['ema_3'] = data['close'].ewm(span=3, adjust=False).mean()
     data['ema_5'] = data['close'].ewm(span=5, adjust=False).mean()
-    
+
     # 5. Микро-тренды для HFT
     data['micro_trend'] = np.where(
         data['close'] > data['close'].shift(1), 1,
         np.where(data['close'] < data['close'].shift(1), -1, 0)
     )
     data['micro_trend_strength'] = data['micro_trend'].rolling(3).sum()
-    
+
     # 6. Быстрый MACD для 1-минутных свечей
     macd = MACD(data['close'], window_slow=12, window_fast=6, window_sign=3)
     data['macd'] = macd.macd()
     data['macd_signal'] = macd.macd_signal()
     data['macd_diff'] = data['macd'] - data['macd_signal']
     data['macd_acceleration'] = data['macd_diff'].diff()
-    
+
     # 7. Короткие осцилляторы
     data['rsi_5'] = RSIIndicator(data['close'], window=5).rsi()
     data['rsi_3'] = RSIIndicator(data['close'], window=3).rsi()
     stoch = StochasticOscillator(data['high'], data['low'], data['close'], window=5)
     data['stoch_k'] = stoch.stoch()
     data['stoch_d'] = stoch.stoch_signal()
-    
-    # 8. Волатильность для оценки рисков
+
+    # 8. Волатильность для оценки рисков и вычисление позиции в Bollinger Bands
     bb = BollingerBands(data['close'], window=10)
     data['bb_width'] = bb.bollinger_wband()
+    # Вычисляем bb_position как нормированное положение цены между нижней и верхней границей
+    data['bb_position'] = (data['close'] - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-7)
     data['atr_3'] = AverageTrueRange(data['high'], data['low'], data['close'], window=3).average_true_range()
-    
+
     # 9. Свечной анализ
     data['candle_body'] = data['close'] - data['open']
-    data['body_ratio'] = abs(data['candle_body']) / (data['high'] - data['low'])
+    data['body_ratio'] = np.abs(data['candle_body']) / (data['high'] - data['low'] + 1e-7)
     data['upper_wick'] = data['high'] - np.maximum(data['open'], data['close'])
     data['lower_wick'] = np.minimum(data['open'], data['close']) - data['low']
-    
+
     # 10. Объемные индикаторы
     data['obv'] = OnBalanceVolumeIndicator(data['close'], data['volume']).on_balance_volume()
-    data['volume_trend'] = data['volume'].diff() / data['volume'].shift(1)
-    
+    data['volume_trend'] = data['volume'].diff() / (data['volume'].shift(1) + 1e-7)
+
     # 11. Индикаторы ускорения для HFT
     data['price_acceleration'] = data['returns'].diff()
     data['volume_acceleration'] = data['volume_delta'].diff()
-    
-    # 12. Многоуровневая целевая переменная для бычьего рынка
+
+    # Добавляем подтверждение объемом (создаётся volume_trend_conf)
+    data = validate_volume_confirmation(data)
+    # Если имеются пропуски в volume_trend_conf, заполняем их нулями
+    data['volume_trend_conf'] = data['volume_trend_conf'].fillna(0)
+
+    # 12. Многоуровневая целевая переменная для бычьего рынка:
+    # Изменённая логика: пороги снижены для выдачи большего количества сигналов BUY/SELL.
+    # Если будущая доходность > 0.0001 и есть объемное подтверждение и растущий MACD, то BUY (1).
+    # Если будущая доходность < -0.0001 и показатели перекупленности (RSI>60) и высокая позиция BB, то SELL (2).
+    # В остальных случаях – HOLD (0).
+    future_returns = data['close'].shift(-1) / data['close'] - 1
+    data = data.iloc[:-1]
+    future_returns = future_returns.iloc[:-1]
     data['target'] = np.where(
-        # Сигнал на короткое движение вверх (2)
-        (data['returns'].shift(-1) > 0.0003) &
-        (data['volume'] > data['volume'].rolling(5).mean()) &  # Объемное подтверждение
-        (data['macd_diff'] > 0) &  # Растущий MACD
-        (data['bb_position'] < 0.5),  # Не вышли за верхнюю границу BB
-        2,
+        (future_returns > 0.0001) &
+        (data['volume'] > data['volume'].rolling(5).mean()) &
+        (data['macd_diff'] > 0) &
+        (data['bb_position'] < 0.6),
+        1,  # BUY
         np.where(
-            # Сигнал на короткую продажу при перекупленности (1)
-            (data['returns'].shift(-1) < -0.0002) &
-            (data['rsi_5'] > 70) &  # Перекупленность
-            (data['bb_position'] > 0.8),  # Верхний уровень BB
-            1,
-            0  # Hold
+            (future_returns < -0.0001) &
+            (data['rsi_5'] > 60) &
+            (data['bb_position'] > 0.4),
+            2,  # SELL
+            0   # HOLD
         )
     )
 
+    # Возвращаем данные с заполнением бесконечностей и пропусков
     return data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
 

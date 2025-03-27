@@ -244,44 +244,49 @@ class MarketClassifier:
         
 
     def add_indicators(self, data):
-        """Расширенный набор индикаторов для точной классификации с использованием pandas_ta"""
-        # Базовые индикаторы
-        data['atr'] = ta.atr(data['high'], data['low'], data['close'], length=7)
-        data['adx'] = ta.adx(data['high'], data['low'], data['close'], length=7)['ADX_7']
-        
-        # Множественные MA для определения силы тренда
-        # CHANGED FOR SCALPING
-        for period in [5, 10, 15, 20]:  # Было [10, 20, 50, 100]
-            data[f'sma_{period}'] = ta.sma(data['close'], length=period)
-            data[f'ema_{period}'] = ta.ema(data['close'], length=period)
+    """Расширенный набор индикаторов для классификации с использованием pandas_ta"""
+    # Базовые индикаторы
+    data['atr'] = ta.atr(data['high'], data['low'], data['close'], length=7)
+    data['adx'] = ta.adx(data['high'], data['low'], data['close'], length=7)['ADX_7']
+    
+    # Множественные MA для определения тренда
+    for period in [5, 10, 15, 20]:
+        data[f'sma_{period}'] = ta.sma(data['close'], length=period)
+        data[f'ema_{period}'] = ta.ema(data['close'], length=period)
+    
+    # Импульсные индикаторы
+    data['rsi'] = ta.rsi(data['close'], length=7)
+    macd = ta.macd(data['close'], fast=12, slow=26, signal=9)
+    data['macd'] = macd['MACD_12_26_9']
+    data['macd_signal'] = macd['MACDs_12_26_9']
+    data['macd_hist'] = macd['MACDh_12_26_9']
+    data['willr'] = ta.willr(data['high'], data['low'], data['close'], length=14)
+    
+    # Волатильность: группируем rolling для close с окном 10 для Bollinger Bands
+    data[['bb_upper','bb_middle','bb_lower']] = data['close'].rolling(10).agg(
+        bb_upper=lambda x: ta.bbands(x, length=10, std=2)['BBU_20_2.0'],
+        bb_middle=lambda x: ta.bbands(x, length=10, std=2)['BBM_20_2.0'],
+        bb_lower=lambda x: ta.bbands(x, length=10, std=2)['BBL_20_2.0']
+    )
+    data['bb_width'] = (data['bb_upper'] - data['bb_lower']) / data['bb_middle']
+    
+    # Объемные индикаторы: группируем rolling для volume с окном 20
+    data[['volume_sma','volume_std']] = data['volume'].rolling(window=20).agg(
+        volume_sma='mean',
+        volume_std='std'
+    )
+    data['volume_ratio'] = data['volume'] / data['volume_sma']
+    
+    # Трендовые индикаторы
+    data['trend_strength'] = abs(data['close'].pct_change().rolling(window=20).sum())
+    data['price_momentum'] = data['close'].diff(periods=10) / data['close'].shift(10)
+    
+    # Динамические уровни поддержки/сопротивления
+    data['support_level'] = data['low'].rolling(window=20).min()
+    data['resistance_level'] = data['high'].rolling(window=20).max()
+    
+    return data
 
-        
-        # Импульсные индикаторы
-        data['rsi'] = ta.rsi(data['close'], length=7)
-        macd = ta.macd(data['close'], fast=12, slow=26, signal=9)
-        data['macd'], data['macd_signal'], data['macd_hist'] = macd['MACD_12_26_9'], macd['MACDs_12_26_9'], macd['MACDh_12_26_9']
-        data['willr'] = ta.willr(data['high'], data['low'], data['close'], length=14)
-        
-        # Волатильность
-        bb = ta.bbands(data['close'], length=10, std=2)
-        data['bb_upper'], data['bb_middle'], data['bb_lower'] = bb['BBU_20_2.0'], bb['BBM_20_2.0'], bb['BBL_20_2.0']
-        data['bb_width'] = (data['bb_upper'] - data['bb_lower']) / data['bb_middle']
-        
-        # Объемные индикаторы
-        data['obv'] = ta.obv(data['close'], data['volume'])
-        data['volume_sma'] = data['volume'].rolling(window=20).mean()
-        data['volume_ratio'] = data['volume'] / data['volume_sma']
-        data['volume_std'] = data['volume'].rolling(window=20).std()
-        
-        # Трендовые индикаторы
-        data['trend_strength'] = abs(data['close'].pct_change().rolling(window=20).sum())
-        data['price_momentum'] = data['close'].diff(periods=10) / data['close'].shift(10)
-        
-        # Динамические уровни поддержки/сопротивления
-        data['support_level'] = data['low'].rolling(window=20).min()
-        data['resistance_level'] = data['high'].rolling(window=20).max()
-        
-        return data
 
     
     def compute_scaler(self, data_path, sample_size=100000, chunk_size=10000):

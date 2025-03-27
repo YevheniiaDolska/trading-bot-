@@ -721,17 +721,22 @@ def extract_features(data):
     data['returns'] = data['close'].pct_change()
     data['log_returns'] = np.log(data['close'] / data['close'].shift(1))
     
-    # 2. Метрики диапазона для флэта
+    # 2. Метрики диапазона
     data['range_width'] = data['high'] - data['low']
-    data['range_stability'] = data['range_width'].rolling(10).std()
-    data['range_ratio'] = data['range_width'] / data['range_width'].rolling(20).mean()
+    # Группируем rolling для range_width с окном 10 и 20
+    roll_range_10 = data['range_width'].rolling(10)
+    data['range_stability'] = roll_range_10.std()
+    roll_range_20 = data['range_width'].rolling(20)
+    data['range_mean_20'] = roll_range_20.mean()
+    data['range_ratio'] = data['range_width'] / data['range_mean_20']
     data['price_in_range'] = (data['close'] - data['low']) / data['range_width']
     
     # 3. Быстрые индикаторы для HFT
     data['sma_3'] = SMAIndicator(data['close'], window=3).sma_indicator()
     data['ema_5'] = data['close'].ewm(span=5, adjust=False).mean()
     data['ema_8'] = data['close'].ewm(span=8, adjust=False).mean()
-    data['clean_volatility'] = data['clean_returns'].rolling(20).std()
+    if 'clean_returns' in data.columns:
+        data['clean_volatility'] = data['clean_returns'].rolling(20).std()
     
     # 4. Короткие осцилляторы
     data['rsi_3'] = RSIIndicator(data['close'], window=3).rsi()
@@ -746,10 +751,12 @@ def extract_features(data):
     data['bb_position'] = (data['close'] - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband())
     data['atr_5'] = AverageTrueRange(data['high'], data['low'], data['close'], window=5).average_true_range()
     
-    # 6. Объемные показатели
-    data['volume_ma'] = data['volume'].rolling(10).mean()
+    # 6. Объемные показатели – группируем rolling по volume с окном 10
+    roll_volume_10 = data['volume'].rolling(10)
+    data['volume_ma'] = roll_volume_10.mean()
+    data['volume_std'] = roll_volume_10.std()
     data['volume_ratio'] = data['volume'] / data['volume_ma']
-    data['volume_stability'] = data['volume'].rolling(10).std() / data['volume_ma']
+    data['volume_stability'] = data['volume_std'] / data['volume_ma']
     
     # 7. Индикаторы пробоя
     data['breakout_intensity'] = abs(data['close'] - data['close'].shift(1)) / data['range_width']
@@ -765,24 +772,20 @@ def extract_features(data):
     # 9. Целевая переменная для флэтового рынка
     volatility = data['returns'].rolling(20).std()
     avg_volatility = volatility.rolling(100).mean()
-    
-    # Целевая переменная для флэтового рынка - фокус на небольших но частых движениях
-    threshold = 0.0002  # Уменьшаем порог для более частых сигналов
+    threshold = 0.0002
     data['target'] = np.where(
-        # Порог на покупку (2)
         (data['returns'].shift(-1) > threshold) &
-        (data['volume'] > data['volume_ma']) &  # Объемное подтверждение
-        (data['rsi_3'] < 40) &  # Локальная перепроданность
-        (data['bb_position'] < 0.3),  # Нижняя часть канала
+        (data['volume'] > data['volume_ma']) &
+        (data['rsi_3'] < 40) &
+        (data['bb_position'] < 0.3),
         2,
         np.where(
-            # Порог на продажу (1)
             (data['returns'].shift(-1) < -threshold) &
-            (data['volume'] > data['volume_ma']) &  # Объемное подтверждение
-            (data['rsi_3'] > 60) &  # Локальная перекупленность
-            (data['bb_position'] > 0.7),  # Верхняя часть канала
+            (data['volume'] > data['volume_ma']) &
+            (data['rsi_3'] > 60) &
+            (data['bb_position'] > 0.7),
             1,
-            0  # Hold
+            0
         )
     )
     
@@ -829,7 +832,13 @@ def add_clustering_feature(data):
         'close', 'volume', 'rsi', 'macd', 'atr', 'sma_10', 'sma_30', 'ema_50', 'ema_200',
         'bb_width', 'macd_diff', 'obv', 'returns', 'log_returns'
     ]
+    max_for_kmeans = 200_000
+    if len(data) > max_for_kmeans:
+        sample_df = data.sample(n=max_for_kmeans, random_state=42)
+    else:
+        sample_df = data
     kmeans = KMeans(n_clusters=5, random_state=42)
+    kmeans.fit(sample_df[features_for_clustering])
     data['cluster'] = kmeans.fit_predict(data[features_for_clustering])
     return data
 
@@ -910,12 +919,20 @@ def balance_classes(X, y):
     logging.info("Начало балансировки классов")
     logging.info(f"Размеры данных до балансировки: X={X.shape}, y={y.shape}")
     logging.info(f"Уникальные классы в y: {np.unique(y, return_counts=True)}")
+    
+    max_for_smote = 300_000
+    if len(X) > max_for_smote:
+        X_sample = X.sample(n=max_for_smote, random_state=42)
+        y_sample = y.loc[X_sample.index]
+    else:
+        X_sample = X
+        y_sample = y
 
     if X.shape[0] == 0 or y.shape[0] == 0:
         raise ValueError("Данные для балансировки пусты. Проверьте исходные данные и фильтры.")
 
     smote_tomek = SMOTETomek(random_state=42)
-    X_resampled, y_resampled = smote_tomek.fit_resample(X, y)
+    X_resampled, y_resampled = smote_tomek.fit_resample(X_sample, y_sample)
 
     logging.info(f"Размеры данных после балансировки: X={X_resampled.shape}, y={y_resampled.shape}")
     return X_resampled, y_resampled
