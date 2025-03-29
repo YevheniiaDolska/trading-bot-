@@ -829,7 +829,7 @@ def remove_outliers(data):
 
 def add_clustering_feature(data):
     features_for_clustering = [
-        'close', 'volume', 'rsi', 'macd', 'atr', 'sma_10', 'sma_30', 'ema_50', 'ema_200',
+        'close', 'volume', 'rsi', 'macd', 'atr', 'sma_3', 'ema_5', 'ema_8',
         'bb_width', 'macd_diff', 'obv', 'returns', 'log_returns'
     ]
     max_for_kmeans = 200_000

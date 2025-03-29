@@ -855,11 +855,12 @@ def log_class_distribution(y, stage):
 
 # Извлечение признаков
 def extract_features(data):
-    logging.info("Извлечение признаков для бычьего рынка")
     data = data.copy()
+    # Приведение столбцов к числовому типу с заполнением пропусков
     for col in ['open', 'high', 'low', 'close', 'volume']:
         data[col] = pd.to_numeric(data[col], errors='coerce').astype(np.float32)
     data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+    data = convert_df_dtypes(data)
 
     # Устанавливаем базовую метку рынка (bullish → 0)
     data['market_type'] = 0
@@ -872,9 +873,11 @@ def extract_features(data):
     data['acceleration'] = data['momentum_1m'].diff()
 
     # 2. Расчет динамических порогов на основе волатильности
-    volatility = data['returns'].rolling(20).std()
-    volume_volatility = data['volume'].pct_change().rolling(20).std()
-    base_strong = 0.001  # базовый порог для сильного движения
+    # Группируем rolling для returns с окном 20
+    roll_returns_20 = data['returns'].rolling(20)
+    volatility = roll_returns_20.std()
+    volume_volatility = data['volume'].pct_change().rolling(20).std()  # отдельно для volume
+    base_strong = 0.001
     base_medium = 0.0005
     strong_threshold = base_strong * (1 + volatility / (volatility.mean() + 1e-7))
     medium_threshold = base_medium * (1 + volatility / (volatility.mean() + 1e-7))
@@ -882,8 +885,14 @@ def extract_features(data):
 
     # 3. Объемные показатели для определения силы движения
     data['volume_delta'] = data['volume'].diff()
-    data['volume_momentum'] = data['volume'].diff().rolling(3).sum()
-    volume_ratio = data['volume'] / (data['volume'].rolling(5).mean() * volume_factor + 1e-7)
+    # Группируем rolling для volume.diff() с окном 3
+    roll_vol_diff_3 = data['volume'].diff().rolling(3)
+    data['volume_momentum'] = roll_vol_diff_3.sum()
+    # Группируем rolling для volume с окном 5
+    roll_volume_5 = data['volume'].rolling(5)
+    volume_mean_5 = roll_volume_5.mean()
+    volume_ratio = data['volume'] / (volume_mean_5 * volume_factor + 1e-7)
+    data['volume_ratio'] = volume_ratio  # сохраняем результат
 
     # 4. Быстрые трендовые индикаторы для HFT
     data['sma_2'] = SMAIndicator(data['close'], window=2).sma_indicator()
@@ -897,7 +906,9 @@ def extract_features(data):
         data['close'] > data['close'].shift(1), 1,
         np.where(data['close'] < data['close'].shift(1), -1, 0)
     )
-    data['micro_trend_strength'] = data['micro_trend'].rolling(3).sum()
+    # Группируем rolling для micro_trend с окном 3
+    roll_micro_3 = data['micro_trend'].rolling(3)
+    data['micro_trend_strength'] = roll_micro_3.sum()
 
     # 6. Быстрый MACD для 1-минутных свечей
     macd = MACD(data['close'], window_slow=12, window_fast=6, window_sign=3)
@@ -913,10 +924,9 @@ def extract_features(data):
     data['stoch_k'] = stoch.stoch()
     data['stoch_d'] = stoch.stoch_signal()
 
-    # 8. Волатильность для оценки рисков и вычисление позиции в Bollinger Bands
+    # 8. Волатильность для оценки рисков и позиция в Bollinger Bands
     bb = BollingerBands(data['close'], window=10)
     data['bb_width'] = bb.bollinger_wband()
-    # Вычисляем bb_position как нормированное положение цены между нижней и верхней границей
     data['bb_position'] = (data['close'] - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-7)
     data['atr_3'] = AverageTrueRange(data['high'], data['low'], data['close'], window=3).average_true_range()
 
@@ -934,16 +944,7 @@ def extract_features(data):
     data['price_acceleration'] = data['returns'].diff()
     data['volume_acceleration'] = data['volume_delta'].diff()
 
-    # Добавляем подтверждение объемом (создаётся volume_trend_conf)
-    data = validate_volume_confirmation(data)
-    # Если имеются пропуски в volume_trend_conf, заполняем их нулями
-    data['volume_trend_conf'] = data['volume_trend_conf'].fillna(0)
-
-    # 12. Многоуровневая целевая переменная для бычьего рынка:
-    # Изменённая логика: пороги снижены для выдачи большего количества сигналов BUY/SELL.
-    # Если будущая доходность > 0.0001 и есть объемное подтверждение и растущий MACD, то BUY (1).
-    # Если будущая доходность < -0.0001 и показатели перекупленности (RSI>60) и высокая позиция BB, то SELL (2).
-    # В остальных случаях – HOLD (0).
+    # 12. Многоуровневая целевая переменная
     future_returns = data['close'].shift(-1) / data['close'] - 1
     data = data.iloc[:-1]
     future_returns = future_returns.iloc[:-1]
@@ -962,33 +963,8 @@ def extract_features(data):
         )
     )
 
-    # Возвращаем данные с заполнением бесконечностей и пропусков
     return data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
-
-def clean_data(X, y):
-    """
-    Очистка данных от пропущенных значений и дубликатов
-    """
-    logging.debug(f"Начало clean_data: X = {X.shape}, y = {y.shape}")
-    
-    # Удаление строк с пропущенными значениями
-    mask = X.notnull().all(axis=1)
-    X_clean = X.loc[mask]
-    y_clean = y.loc[mask]
-    logging.debug(f"После удаления пропусков: X = {X_clean.shape}, y = {y_clean.shape}")
-
-    # Удаление дубликатов
-    duplicated_indices = X_clean.index.duplicated(keep='first')
-    X_clean = X_clean.loc[~duplicated_indices]
-    y_clean = y_clean.loc[~duplicated_indices]
-    logging.debug(f"После удаления дубликатов: X = {X_clean.shape}, y = {y_clean.shape}")
-    
-    # Проверка индексов
-    if not X_clean.index.equals(y_clean.index):
-        raise ValueError("Индексы X и y не совпадают после очистки данных")
-
-    return X_clean, y_clean
 
 
 # Удаление выбросов
@@ -1041,35 +1017,21 @@ def remove_outliers(data):
 
 
 def add_clustering_feature(data):
-    logging.info("Кластеризация: Начало")
-    logging.info(f"Входные колонки: {data.columns.tolist()}")
-    
-    # Сохраняем target
-    target = data['target'].copy() if 'target' in data.columns else None
-    
     features_for_clustering = [
-        'close', 'volume', 'rsi', 'macd', 'atr', 'sma_10', 'sma_30', 'ema_50', 'ema_200',
+        'close', 'volume', 'rsi', 'macd', 'atr', 'sma_2', 'sma_3', 'sma_10', 'ema_3', 'ema_5',
         'bb_width', 'macd_diff', 'obv', 'returns', 'log_returns'
     ]
     
-    # Проверка наличия признаков
-    available_features = [f for f in features_for_clustering if f in data.columns]
-    
-    if not available_features:
-        raise ValueError("Нет доступных признаков для кластеризации")
-        
-    # Кластеризация
+    max_for_kmeans = 200_000
+    if len(data) > max_for_kmeans:
+        sample_df = data.sample(n=max_for_kmeans, random_state=42)
+    else:
+        sample_df = data
+
     kmeans = KMeans(n_clusters=5, random_state=42)
-    clustered_data = data.copy()
-    clustered_data['cluster'] = kmeans.fit_predict(data[available_features])
-    
-    # Восстанавливаем target
-    if target is not None:
-        clustered_data['target'] = target
-        
-    logging.info("Кластеризация: Завершено")
-    logging.info(f"Выходные колонки: {clustered_data.columns.tolist()}")
-    return clustered_data
+    kmeans.fit(sample_df[features_for_clustering])
+    data['cluster'] = kmeans.predict(data[features_for_clustering])
+    return data
 
 
 # Аугментация данных (добавление шума)
@@ -1234,14 +1196,32 @@ def get_checkpoint_path(model_name, market_type):
     checkpoint_path = os.path.join("checkpoints", market_type, model_name)
     ensure_directory(checkpoint_path)
     return checkpoint_path
+
+
 # Определение функции балансировки классов
 def balance_classes(X, y):
-    """
-    Балансирует классы с использованием SMOTETomek.
-    """
-    smt = SMOTETomek(random_state=42)
-    X_res, y_res = smt.fit_resample(X, y)
-    return X_res, y_res
+    logging.info("Начало балансировки классов")
+    logging.info(f"Размеры данных до балансировки: X={X.shape}, y={y.shape}")
+    logging.info(f"Уникальные классы в y: {np.unique(y, return_counts=True)}")
+    
+    max_for_smote = 300_000
+    if len(X) > max_for_smote:
+        # Возьмём случайную подвыборку строк, чтобы SMOTE не вис на 10+ млн
+        X_sample = X.sample(n=max_for_smote, random_state=42)
+        y_sample = y.loc[X_sample.index]  # y должен быть Series с тем же индексом
+    else:
+        X_sample = X
+        y_sample = y
+
+    if X.shape[0] == 0 or y.shape[0] == 0:
+        raise ValueError("Данные для балансировки пусты. Проверьте исходные данные и фильтры.")
+
+    smote_tomek = SMOTETomek(random_state=42)
+    X_resampled, y_resampled = smote_tomek.fit_resample(X_sample, y_sample)
+
+    logging.info(f"Размеры данных после балансировки: X={X_resampled.shape}, y={y_resampled.shape}")
+    return X_resampled, y_resampled
+
 
 
 def check_class_balance(y):

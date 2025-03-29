@@ -903,117 +903,73 @@ def triple_barrier_label(prices, T=5, window=50, k=1.0):
 
 
 # Извлечение признаков
-# Извлечение признаков
 def extract_features(data):
     logging.info("Извлечение признаков для медвежьего рынка")
     data = data.copy()
+    # Применяем фильтр Калмана, как и раньше
     data = remove_noise(data)
 
     # Базовые расчёты
     returns = data['close'].pct_change()
-    volume_ratio = data['volume'] / data['volume'].rolling(10).mean()
-    price_acceleration = returns.diff()  # Скорость изменения цены
+    # Группируем rolling-вычисления для 'volume'
+    volume_agg = data['volume'].rolling(10).agg(mean_vol='mean', std_vol='std')
+    data['volume_ma'] = volume_agg['mean_vol']
+    # Можно сразу вычислить volume_ratio (с использованием уже посчитанной скользящей средней)
+    data['volume_ratio'] = data['volume'] / (volume_agg['mean_vol'] + 1e-7)
+    # Цена ускорения (diff от returns)
+    price_acceleration = returns.diff()
 
-    # Вычисление индикаторов, необходимых для целевой переменной
-    # MACD и связанные показатели
+    # MACD и связанные показатели – оставляем без изменений (они используют внешнюю библиотеку)
     macd = MACD(data['smoothed_close'], window_slow=26, window_fast=12, window_sign=9)
     data['macd'] = macd.macd()
     data['macd_signal'] = macd.macd_signal()
     data['macd_diff'] = data['macd'] - data['macd_signal']
     data['macd_slope'] = data['macd_diff'].diff()
     
-    # RSI с окном 5 для условий перепроданности
+    # RSI с окном 5
     data['rsi_5'] = RSIIndicator(data['close'], window=5).rsi()
     
-    # Bollinger Bands для определения положения цены относительно полос
+    # Bollinger Bands для определения положения цены
     bb = BollingerBands(data['smoothed_close'], window=20)
     data['bb_high'] = bb.bollinger_hband()
     data['bb_low'] = bb.bollinger_lband()
     data['bb_width'] = bb.bollinger_wband()
-    data['bb_position'] = (data['close'] - data['bb_low']) / (data['bb_high'] - data['bb_low'])
+    data['bb_position'] = (data['close'] - data['bb_low']) / ((data['bb_high'] - data['bb_low']) + 1e-7)
 
-    # Динамические пороги на основе волатильности
+    # Пример динамических порогов (оставляем как есть)
     def calculate_dynamic_thresholds(window=10):
-        volatility = returns.rolling(window).std()
-        avg_volatility = volatility.rolling(100).mean()  # Долгосрочная средняя волатильность
-        volatility_ratio = volatility / avg_volatility
-        base_strong = -0.001  # 0.1%
-        base_medium = -0.0005  # 0.05%
-        strong_threshold = base_strong * np.where(
-            volatility_ratio > 1.5, 1.5,
-            np.where(volatility_ratio < 0.5, 0.5, volatility_ratio)
-        )
-        medium_threshold = base_medium * np.where(
-            volatility_ratio > 1.5, 1.5,
-            np.where(volatility_ratio < 0.5, 0.5, volatility_ratio)
-        )
+        vol = returns.rolling(window).std()
+        avg_vol = vol.rolling(100).mean()
+        vol_ratio = vol / (avg_vol + 1e-7)
+        base_strong = -0.001
+        base_medium = -0.0005
+        strong_threshold = base_strong * np.where(vol_ratio > 1.5, 1.5, np.where(vol_ratio < 0.5, 0.5, vol_ratio))
+        medium_threshold = base_medium * np.where(vol_ratio > 1.5, 1.5, np.where(vol_ratio < 0.5, 0.5, vol_ratio))
         return strong_threshold, medium_threshold
 
     strong_threshold, medium_threshold = calculate_dynamic_thresholds()
 
-    # ------------------------------------------------------------------------------
-    #  ИЗМЕНЁННЫЙ БЛОК: Расширяем условия для Sell (2) и Buy (1),
-    #  чтобы реже оставаться в Hold (0).
-    # ------------------------------------------------------------------------------
-    #
-    #  Логика:
-    #  - Sell (2), если:
-    #       * returns.shift(-1) < -0.0001 ИЛИ (price_acceleration < -0.0001)
-    #         (то есть рынок падает или ускорение вниз)
-    #       * и при этом MACD ниже нуля (macd_diff < 0) — индикатор медвежьего движения
-    #
-    #  - Buy (1), если:
-    #       * returns.shift(-1) > 0.0002 ИЛИ (rsi_5 < 45)
-    #         (то есть рынок подаёт сигнал на рост или RSI не слишком высок)
-    #       * и при этом bb_position < 0.5 — цена относительно нижней полосы
-    #
-    #  - Всё остальное => 0 (Hold)
-    #
-    #  Вы можете поэкспериментировать с порогами:
-    #    - Уменьшить -0.0001 / -0.00005 для Sell
-    #    - Уменьшить 0.0002 / 0.0001 для Buy
-    #    - Увеличить rsi_5 < 50
-    #    - Увеличить bb_position < 0.6
-    #  чтобы ещё чаще получать сигналы, если нужно.
-    # ------------------------------------------------------------------------------
-
+    # Изменённый блок для формирования целевой переменной (логика сохранена)
     data['target'] = np.where(
-        # Sell (2)
-        (
-            ((returns.shift(-1) < -0.00005) | (price_acceleration < -0.00005))  # "или" падение
-            & (data['macd_diff'] < 0)                                        # MACD указывает вниз
-        ),
+        (((returns.shift(-1) < -0.00005) | (price_acceleration < -0.00005)) & (data['macd_diff'] < 0)),
         2,
         np.where(
-            # Buy (1)
-            (
-                ((returns.shift(-1) > 0.0001) | (data['rsi_5'] < 50))  # "или" рост/RSI
-                & (data['bb_position'] < 0.6)                          # в нижней части Боллинджера
-            ),
+            (((returns.shift(-1) > 0.0001) | (data['rsi_5'] < 50)) & (data['bb_position'] < 0.6)),
             1,
-            0  # Иначе Hold
+            0
         )
     )
 
-    # Базовые характеристики
-    data['returns'] = returns
+    # Дополнительные расчёты (объём, давление, волатильность, трендовые индикаторы и т.д.) – оставляем как есть.
     data['log_returns'] = np.log(data['close'] / data['close'].shift(1))
-
-    # Анализ объёма и давления продаж
-    data['volume_ma'] = data['volume'].rolling(10).mean()
-    data['volume_ratio'] = data['volume'] / data['volume_ma']
-    data['selling_pressure'] = data['volume'] * (data['close'] - data['open']).abs() * \
-                               np.where(data['close'] < data['open'], 1, 0)
-    data['buying_pressure'] = data['volume'] * (data['close'] - data['open']).abs() * \
-                              np.where(data['close'] > data['open'], 1, 0)
-    data['pressure_ratio'] = data['selling_pressure'] / data['buying_pressure'].replace(0, 1)
-
-    # Динамические индикаторы волатильности
+    data['selling_pressure'] = data['volume'] * np.abs(data['close'] - data['open']) * np.where(data['close'] < data['open'], 1, 0)
+    data['buying_pressure'] = data['volume'] * np.abs(data['close'] - data['open']) * np.where(data['close'] > data['open'], 1, 0)
+    data['pressure_ratio'] = data['selling_pressure'] / (data['buying_pressure'].replace(0, 1))
     data['volatility'] = returns.rolling(10).std()
     data['volatility_ma'] = data['volatility'].rolling(20).mean()
-    data['volatility_ratio'] = data['volatility'] / data['volatility_ma']
+    data['volatility_ratio'] = data['volatility'] / (data['volatility_ma'] + 1e-7)
 
-    # Трендовые индикаторы с адаптивными периодами (например, Фибоначчи)
+    # Трендовые индикаторы по разным периодам
     for period in [3, 5, 8, 13, 21]:
         data[f'sma_{period}'] = SMAIndicator(data['smoothed_close'], window=period).sma_indicator()
         data[f'ema_{period}'] = data['smoothed_close'].ewm(span=period, adjust=False).mean()
@@ -1024,24 +980,22 @@ def extract_features(data):
     data['volume_change'] = data['volume'].pct_change()
     data['volume_ma_ratio'] = data['volume'] / data['volume'].rolling(20).mean()
 
-    # Осцилляторы с адаптивными периодами
+    # Осцилляторы и уровни поддержки/сопротивления
     for period in [7, 14, 21]:
         data[f'rsi_{period}'] = RSIIndicator(data['close'], window=period).rsi()
     data['stoch_k'] = StochasticOscillator(data['high'], data['low'], data['close'], window=7).stoch()
     data['stoch_d'] = StochasticOscillator(data['high'], data['low'], data['close'], window=7).stoch_signal()
-
-    # Индикаторы уровней поддержки/сопротивления
     data['support_level'] = data['low'].rolling(20).min()
     data['resistance_level'] = data['high'].rolling(20).max()
     data['price_to_support'] = data['close'] / data['support_level']
 
-    # Паттерны свечей и их силы
-    data['candle_body'] = abs(data['close'] - data['open'])
+    # Свечной анализ
+    data['candle_body'] = np.abs(data['close'] - data['open'])
     data['upper_shadow'] = data['high'] - np.maximum(data['close'], data['open'])
     data['lower_shadow'] = np.minimum(data['close'], data['open']) - data['low']
-    data['body_to_shadow_ratio'] = data['candle_body'] / (data['upper_shadow'] + data['lower_shadow']).replace(0, 0.001)
+    data['body_to_shadow_ratio'] = data['candle_body'] / ((data['upper_shadow'] + data['lower_shadow']).replace(0, 0.001))
 
-    # Ценовые уровни и их прорывы
+    # Ценовые уровни и прорывы
     data['price_level_breach'] = np.where(
         data['close'] < data['support_level'].shift(1), -1,
         np.where(data['close'] > data['resistance_level'].shift(1), 1, 0)
@@ -1051,20 +1005,18 @@ def extract_features(data):
     data['price_acceleration'] = returns.diff()
     data['volume_acceleration'] = data['volume_change'].diff()
 
-    # Пересчёт Bollinger Bands (для дополнительной проверки)
-    bb = BollingerBands(data['smoothed_close'], window=20)
-    data['bb_high'] = bb.bollinger_hband()
-    data['bb_low'] = bb.bollinger_lband()
-    data['bb_width'] = bb.bollinger_wband()
-    data['bb_position'] = (data['close'] - data['bb_low']) / (data['bb_high'] - data['bb_low'])
+    # Пересчёт Bollinger Bands (дополнительная проверка)
+    bb2 = BollingerBands(data['smoothed_close'], window=20)
+    data['bb_high'] = bb2.bollinger_hband()
+    data['bb_low'] = bb2.bollinger_lband()
+    data['bb_width'] = bb2.bollinger_wband()
+    data['bb_position'] = (data['close'] - data['bb_low']) / ((data['bb_high'] - data['bb_low']) + 1e-7)
 
-    # ATR индикаторы для оценки волатильности
+    # ATR индикаторы
     for period in [5, 10, 20]:
-        data[f'atr_{period}'] = AverageTrueRange(
-            data['high'], data['low'], data['close'], window=period
-        ).average_true_range()
+        data[f'atr_{period}'] = AverageTrueRange(data['high'], data['low'], data['close'], window=period).average_true_range()
 
-    # Специальные признаки для высокочастотной торговли
+    # Специальные признаки для HFT
     data['micro_trend'] = np.where(
         data['smoothed_close'] > data['smoothed_close'].shift(1), 1,
         np.where(data['smoothed_close'] < data['smoothed_close'].shift(1), -1, 0)
@@ -1072,11 +1024,11 @@ def extract_features(data):
     data['micro_trend_sum'] = data['micro_trend'].rolling(5).sum()
     data['volume_acceleration_5m'] = (data['volume'].diff() / data['volume'].rolling(5).mean()).fillna(0)
 
-    # Если столбец clean_returns отсутствует, вычисляем его на основе smoothed_close
+    # Если 'clean_returns' отсутствует, создаём его
     if 'clean_returns' not in data.columns:
         data['clean_returns'] = data['smoothed_close'].pct_change()
 
-    # Признаки для определения силы медвежьего движения
+    # Признаки силы медвежьего движения
     data['bearish_strength'] = np.where(
         (data['close'] < data['open']) & 
         (data['volume'] > data['volume'].rolling(20).mean() * 1.5) & 
@@ -1091,6 +1043,7 @@ def extract_features(data):
             np.where(data['close'] < data['open'], 1, 0)
         )
     )
+
 
     # Формирование словаря признаков
     features = {}
@@ -1130,7 +1083,8 @@ def extract_features(data):
         logging.warning(f"⚠ Найдено {num_nans} пропущенных значений. Заполняем...")
         data.fillna(0, inplace=True)
 
-    return features_df.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+    # Возвращаем DataFrame с обработанными признаками
+    return data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
 
 
@@ -1202,9 +1156,17 @@ def add_clustering_feature(data):
     
     if len(available_features) < 5:  # Минимальное количество признаков для кластеризации
         raise ValueError("Недостаточно признаков для кластеризации")
+    
+     # Если данных много, берём сэмпл (например, 200k строк)
+    max_for_kmeans = 200_000
+    if len(data) > max_for_kmeans:
+        sample_df = data.sample(n=max_for_kmeans, random_state=42)
+    else:
+        sample_df = data
         
     # Кластеризация
     kmeans = KMeans(n_clusters=5, random_state=42)
+    kmeans.fit(sample_df[features_for_clustering])
     data['cluster'] = kmeans.fit_predict(data[available_features])
     
     logging.info(f"Использовано признаков для кластеризации: {len(available_features)}")
@@ -1326,12 +1288,30 @@ def get_checkpoint_path(model_name, market_type):
 
 # Определение функции балансировки классов
 def balance_classes(X, y):
-    """
-    Балансирует классы с использованием SMOTETomek.
-    """
-    smt = SMOTETomek(random_state=42)
-    X_res, y_res = smt.fit_resample(X, y)
-    return X_res, y_res
+    logging.info("Начало балансировки классов")
+    logging.info(f"Размеры данных до балансировки: X={X.shape}, y={y.shape}")
+    logging.info(f"Уникальные классы в y: {np.unique(y, return_counts=True)}")
+
+    if X.shape[0] == 0 or y.shape[0] == 0:
+        raise ValueError("Данные для балансировки пусты. Проверьте исходные данные и фильтры.")
+    
+    max_for_smote = 300_000
+    if len(X) > max_for_smote:
+        X_sample = X.sample(n=max_for_smote, random_state=42)
+        y_sample = y.loc[X_sample.index]
+    else:
+        X_sample = X
+        y_sample = y
+    
+    smote_tomek = SMOTETomek(random_state=42)
+    X_resampled, y_resampled = smote_tomek.fit_resample(X_sample, y_sample)
+
+    logging.info(f"Размеры данных после балансировки: X={X_resampled.shape}, y={y_resampled.shape}")
+    # Возвращаем результат как DataFrame и Series, если исходные X и y были такими:
+    X_resampled = pd.DataFrame(X_resampled, columns=X_sample.columns, index=X_sample.index[:len(X_resampled)])
+    y_resampled = pd.Series(y_resampled, index=X_resampled.index)
+    return X_resampled, y_resampled
+
 
 
 def check_class_balance(y):

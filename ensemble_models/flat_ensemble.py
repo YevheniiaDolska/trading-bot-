@@ -859,76 +859,111 @@ def log_class_distribution(y, stage):
 
 # Извлечение признаков
 def extract_features(data):
-    """
-    Извлечение признаков для флэтового рынка.
-    Рассчитываются базовые метрики, диапазонные показатели, быстрые индикаторы, осцилляторы, объемные и пробойные признаки.
-    Целевая переменная определяется по следующему принципу:
-      - Если следующий процентный прирост > threshold, то BUY (2);
-      - Если < -threshold, то SELL (1);
-      - Иначе HOLD (0).
-    """
     logging.info("Извлечение признаков для флэтового рынка")
     data = data.copy()
-    # Базовые метрики
+    
+    # 1. Базовые метрики
     data['returns'] = data['close'].pct_change()
     data['log_returns'] = np.log(data['close'] / data['close'].shift(1))
-    # Диапазонные метрики
+    
+    # 2. Метрики диапазона
     data['range_width'] = data['high'] - data['low']
-    data['range_stability'] = data['range_width'].rolling(10).std()
-    data['range_ratio'] = data['range_width'] / data['range_width'].rolling(20).mean()
+    # Группируем rolling для range_width с окном 10 и 20
+    roll_range_10 = data['range_width'].rolling(10)
+    data['range_stability'] = roll_range_10.std()
+    roll_range_20 = data['range_width'].rolling(20)
+    data['range_mean_20'] = roll_range_20.mean()
+    data['range_ratio'] = data['range_width'] / data['range_mean_20']
     data['price_in_range'] = (data['close'] - data['low']) / data['range_width']
-    # Быстрые трендовые индикаторы
+    
+    # 3. Быстрые индикаторы для HFT
     data['sma_3'] = SMAIndicator(data['close'], window=3).sma_indicator()
     data['ema_5'] = data['close'].ewm(span=5, adjust=False).mean()
     data['ema_8'] = data['close'].ewm(span=8, adjust=False).mean()
-    # Если clean_returns не вычислены, заполняем их
-    if 'clean_returns' not in data.columns:
-        data['clean_returns'] = data['close'].pct_change().fillna(0)
-    data['clean_volatility'] = data['clean_returns'].rolling(20).std()
-    # Осцилляторы
+    if 'clean_returns' in data.columns:
+        data['clean_volatility'] = data['clean_returns'].rolling(20).std()
+    
+    # 4. Короткие осцилляторы
     data['rsi_3'] = RSIIndicator(data['close'], window=3).rsi()
     data['rsi_5'] = RSIIndicator(data['close'], window=5).rsi()
     stoch = StochasticOscillator(data['high'], data['low'], data['close'], window=5)
     data['stoch_k'] = stoch.stoch()
     data['stoch_d'] = stoch.stoch_signal()
-    # Волатильность и Bollinger Bands
+    
+    # 5. Волатильность малых периодов
     bb = BollingerBands(data['close'], window=10)
     data['bb_width'] = bb.bollinger_wband()
     data['bb_position'] = (data['close'] - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband())
     data['atr_5'] = AverageTrueRange(data['high'], data['low'], data['close'], window=5).average_true_range()
-    # Объемные показатели
-    data['volume_ma'] = data['volume'].rolling(10).mean()
+    
+    # 6. Объемные показатели – группируем rolling по volume с окном 10
+    roll_volume_10 = data['volume'].rolling(10)
+    data['volume_ma'] = roll_volume_10.mean()
+    data['volume_std'] = roll_volume_10.std()
     data['volume_ratio'] = data['volume'] / data['volume_ma']
-    data['volume_stability'] = data['volume'].rolling(10).std() / data['volume_ma']
-    # Индикаторы пробоя
-    data['breakout_intensity'] = (data['close'] - data['close'].shift(1)).abs() / data['range_width']
-    data['false_breakout'] = ((data['high'] > data['high'].shift(1)) & (data['close'] < data['close'].shift(1))).astype(int)
-    # Микро-паттерны
-    data['micro_trend'] = np.where(data['close'] > data['close'].shift(1), 1,
-                                   np.where(data['close'] < data['close'].shift(1), -1, 0))
+    data['volume_stability'] = data['volume_std'] / data['volume_ma']
+    
+    # 7. Индикаторы пробоя
+    data['breakout_intensity'] = abs(data['close'] - data['close'].shift(1)) / data['range_width']
+    data['false_breakout'] = (data['high'] > data['high'].shift(1)) & (data['close'] < data['close'].shift(1))
+    
+    # 8. Микро-паттерны
+    data['micro_trend'] = np.where(
+        data['close'] > data['close'].shift(1), 1,
+        np.where(data['close'] < data['close'].shift(1), -1, 0)
+    )
     data['micro_trend_change'] = (data['micro_trend'] != data['micro_trend'].shift(1)).astype(int)
-
-    # Целевая переменная для флэтового рынка - фокус на небольших но частых движениях
-    threshold = 0.0002  # Уменьшаем порог для более частых сигналов
+    
+    # 9. Целевая переменная для флэтового рынка
+    volatility = data['returns'].rolling(20).std()
+    avg_volatility = volatility.rolling(100).mean()
+    threshold = 0.0002
     data['target'] = np.where(
-        # Порог на покупку (2)
         (data['returns'].shift(-1) > threshold) &
-        (data['volume'] > data['volume_ma']) &  # Объемное подтверждение
-        (data['rsi_3'] < 40) &  # Локальная перепроданность
-        (data['bb_position'] < 0.3),  # Нижняя часть канала
+        (data['volume'] > data['volume_ma']) &
+        (data['rsi_3'] < 40) &
+        (data['bb_position'] < 0.3),
         2,
         np.where(
-            # Порог на продажу (1)
             (data['returns'].shift(-1) < -threshold) &
-            (data['volume'] > data['volume_ma']) &  # Объемное подтверждение
-            (data['rsi_3'] > 60) &  # Локальная перекупленность
-            (data['bb_position'] > 0.7),  # Верхняя часть канала
+            (data['volume'] > data['volume_ma']) &
+            (data['rsi_3'] > 60) &
+            (data['bb_position'] > 0.7),
             1,
-            0  # Hold
+            0
         )
     )
-    data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
-    return data
+    
+    # Создаем словарь признаков
+    features = {}
+    
+    # Базовые признаки (все, что уже рассчитано)
+    for col in data.columns:
+        if col not in ['target', 'market_type']:
+            features[col] = data[col]
+    
+    # Добавляем межмонетные признаки, если они есть
+    if 'btc_corr' in data.columns:
+        features['btc_corr'] = data['btc_corr']
+    if 'rel_strength_btc' in data.columns:
+        features['rel_strength_btc'] = data['rel_strength_btc']
+    if 'beta_btc' in data.columns:
+        features['beta_btc'] = data['beta_btc']
+            
+    # Добавляем признаки подтверждения объемом, если они есть
+    if 'volume_strength' in data.columns:
+        features['volume_strength'] = data['volume_strength']
+    if 'volume_accumulation' in data.columns:
+        features['volume_accumulation'] = data['volume_accumulation']
+    
+    # Добавляем очищенные от шума признаки, если они есть
+    if 'clean_returns' in data.columns:
+        features['clean_returns'] = data['clean_returns']
+        
+    # Преобразуем признаки в DataFrame
+    features_df = pd.DataFrame(features)
+    
+    return data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
 
 
@@ -959,17 +994,43 @@ def remove_outliers(data):
 
 
 def add_clustering_feature(data):
-    """
-    Добавляет кластерный признак с помощью KMeans (по выбранным признакам).
-    """
-    features_for_clustering = ['close', 'volume', 'rsi_3', 'atr_5', 'sma_3']
-    available = [f for f in features_for_clustering if f in data.columns]
-    if available:
-        kmeans = KMeans(n_clusters=5, random_state=42)
-        data['cluster'] = kmeans.fit_predict(data[available])
+    features_for_clustering = [
+        'close', 'volume', 'rsi', 'macd', 'atr', 'sma_3', 'ema_5', 'ema_8',
+        'bb_width', 'macd_diff', 'obv', 'returns', 'log_returns'
+    ]
+    max_for_kmeans = 200_000
+    if len(data) > max_for_kmeans:
+        sample_df = data.sample(n=max_for_kmeans, random_state=42)
+    else:
+        sample_df = data
+    kmeans = KMeans(n_clusters=5, random_state=42)
+    kmeans.fit(sample_df[features_for_clustering])
+    data['cluster'] = kmeans.fit_predict(data[features_for_clustering])
     return data
 
+def balance_classes(X, y):
+    logging.info("Начало балансировки классов")
+    logging.info(f"Размеры данных до балансировки: X={X.shape}, y={y.shape}")
+    logging.info(f"Уникальные классы в y: {np.unique(y, return_counts=True)}")
+    
+    max_for_smote = 300_000
+    if len(X) > max_for_smote:
+        X_sample = X.sample(n=max_for_smote, random_state=42)
+        y_sample = y.loc[X_sample.index]
+    else:
+        X_sample = X
+        y_sample = y
 
+    if X.shape[0] == 0 or y.shape[0] == 0:
+        raise ValueError("Данные для балансировки пусты. Проверьте исходные данные и фильтры.")
+
+    smote_tomek = SMOTETomek(random_state=42)
+    X_resampled, y_resampled = smote_tomek.fit_resample(X_sample, y_sample)
+
+    logging.info(f"Размеры данных после балансировки: X={X_resampled.shape}, y={y_resampled.shape}")
+    return X_resampled, y_resampled
+ 
+ 
 # Аугментация данных (добавление шума)
 def augment_data(X):
     """
@@ -1296,9 +1357,12 @@ def train_ensemble_model(data, selected_features, model_filename='flat_stacked_e
     logging.info(f"После remove_outliers: X = {X_clean.shape}, y = {y_clean.shape}")
     assert X_clean.index.equals(y_clean.index), "Индексы X и y не совпадают после удаления выбросов!"
     
+    # Балансировка классов
+    X_resampled, y_resampled = balance_classes(X_clean, y_clean)
+    
     # 6) Train/Test split
     X_train, X_test, y_train, y_test = train_test_split(
-        X_clean, y_clean, test_size=0.2, random_state=42, stratify=y_clean
+        X_resampled, y_resampled, test_size=0.2, random_state=42, stratify=y_clean
     )
     logging.info(f"Train size: X = {X_train.shape}, y = {y_train.shape}")
     logging.info(f"Test size: X = {X_test.shape}, y = {y_test.shape}")
