@@ -141,8 +141,9 @@ def detect_anomalies(data):
     Для торговли на колебаниях используется более короткое окно (10 свечей) и сниженный порог обнаружения.
     """
     # Рассчитываем z-score для объёма и цены по окну из 10 свечей
-    data['volume_zscore'] = ((data['volume'] - data['volume'].rolling(10).mean()) / 
-                             data['volume'].rolling(10).std())
+    data.loc[:, 'volume_zscore'] = ((data['volume'] - data['volume'].rolling(10).mean()) /
+                                data['volume'].rolling(10).std())
+
     data['price_zscore'] = ((data['close'] - data['close'].rolling(10).mean()) / 
                             data['close'].rolling(10).std())
     
@@ -1144,7 +1145,7 @@ def prepare_data(data):
     def process_chunk(df_chunk):
         df_chunk = detect_anomalies(df_chunk)
         logging.info("Аномалии обнаружены в чанке")
-        df_chunk = validate_volume_confirmation_bullish(df_chunk)
+        df_chunk = validate_volume_confirmation(df_chunk)
         logging.info("Добавлены признаки подтверждения объемом для чанка")
         df_chunk = remove_noise(df_chunk)
         logging.info("Шум отфильтрован в чанке")
