@@ -356,7 +356,10 @@ def custom_profit_loss(y_true, y_pred):
     )
     
     # Штраф за задержку реакции: небольшое увеличение штрафа с ростом номера примера
-    time_penalty = 0.1 * tf.abs(diff) * (tf.cast(tf.range(tf.shape(diff)[0]), tf.float32) / tf.cast(tf.shape(diff)[0], tf.float32))
+    time_penalty = 0.1 * tf.abs(diff) * (
+    tf.expand_dims(tf.cast(tf.range(tf.shape(diff)[0]), tf.float32), axis=1) / tf.cast(tf.shape(diff)[0], tf.float32)
+        )
+
     
     # Штраф за транзакционные издержки: учитываем резкие изменения предсказаний между соседними точками
     transaction_cost = 0.001 * tf.reduce_sum(tf.abs(y_pred[1:] - y_pred[:-1]))
