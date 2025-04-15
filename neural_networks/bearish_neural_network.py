@@ -1288,7 +1288,7 @@ def build_bearish_neural_network(data):
                                        restore_best_weights=True, mode='min')
     
         history = model.fit(train_dataset,
-                            epochs=200, #200
+                            epochs=1, #200
                             validation_data=val_dataset,
                             class_weight={0: 1.0, 1: 2.0, 2: 3.0},
                             verbose=1,
@@ -1350,15 +1350,10 @@ if __name__ == "__main__":
     try:
         strategy = initialize_strategy()
         
-        symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
+        symbols = ['BTCUSDC', 'ETHUSDC']
         
         bearish_periods = [
-            {"start": "2018-01-17", "end": "2018-03-31"},
-            {"start": "2018-09-01", "end": "2018-12-31"},
             {"start": "2021-05-12", "end": "2021-08-31"},
-            {"start": "2022-05-01", "end": "2022-07-31"},
-            {"start": "2022-09-01", "end": "2022-12-15"},
-            {"start": "2022-12-16", "end": "2023-01-31"}
         ]
         
         logging.info("🔄 Загрузка данных для медвежьего периода...")

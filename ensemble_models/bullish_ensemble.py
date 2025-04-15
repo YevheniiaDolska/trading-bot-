@@ -210,7 +210,7 @@ def preprocess_market_data(data_dict):
 
 # GradientBoosting: сохранение после каждой итерации
 class CheckpointGradientBoosting(GradientBoostingClassifier):
-    def __init__(self, n_estimators=100, learning_rate=0.1, max_depth=3, random_state=None, #n_estimators=100
+    def __init__(self, n_estimators=1, learning_rate=0.1, max_depth=3, random_state=None, #n_estimators=100
                  subsample=1.0, min_samples_split=2, min_samples_leaf=1):
         super().__init__(n_estimators=n_estimators, learning_rate=learning_rate, max_depth=max_depth,
                          random_state=random_state, subsample=subsample, min_samples_split=min_samples_split,
@@ -267,7 +267,7 @@ class CheckpointGradientBoosting(GradientBoostingClassifier):
 
 # XGBoost: сохранение каждые 3 итерации
 class CheckpointXGBoost(XGBClassifier):
-    def __init__(self, n_estimators=100, max_depth=3, learning_rate=0.1, #n_estimators=100
+    def __init__(self, n_estimators=1, max_depth=3, learning_rate=0.1, #n_estimators=100
                  min_child_weight=1, subsample=1.0, colsample_bytree=1.0,
                  random_state=None, objective=None, **kwargs):
         super().__init__(
@@ -311,7 +311,7 @@ class CheckpointXGBoost(XGBClassifier):
 
 # LightGBM: сохранение каждые 3 итерации
 class CheckpointLightGBM(LGBMClassifier):
-    def __init__(self, n_estimators=100, num_leaves=31, learning_rate=0.1, #n_estimators=100
+    def __init__(self, n_estimators=1, num_leaves=31, learning_rate=0.1, #n_estimators=100
                  min_data_in_leaf=20, max_depth=-1, random_state=None, **kwargs):
         super().__init__(
             n_estimators=n_estimators,
@@ -360,7 +360,7 @@ class CheckpointLightGBM(LGBMClassifier):
     
 # CatBoost: сохранение каждые 3 итерации
 class CheckpointCatBoost(CatBoostClassifier):
-    def __init__(self, iterations=1000, depth=6, learning_rate=0.1, #iterations=1000
+    def __init__(self, iterations=1, depth=6, learning_rate=0.1, #iterations=1000
                  random_state=None, **kwargs):
         # Удаляем save_snapshot из kwargs если он там есть
         if 'save_snapshot' in kwargs:
@@ -407,7 +407,7 @@ class CheckpointCatBoost(CatBoostClassifier):
     
 # RandomForest: сохранение после каждого дерева
 class CheckpointRandomForest(RandomForestClassifier):
-    def __init__(self, n_estimators=100, max_depth=None, #n_estimators=100
+    def __init__(self, n_estimators=1, max_depth=None, #n_estimators=100
                  min_samples_split=2, min_samples_leaf=1, random_state=None):
         super().__init__(n_estimators=n_estimators, max_depth=max_depth, 
                          min_samples_split=min_samples_split,
@@ -1300,7 +1300,7 @@ def train_models_for_intervals(data, intervals, selected_features=None):
         y = prepared_data['target']
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        model = RandomForestClassifier(n_estimators=200, max_depth=6, random_state=42) #n_estimators=200
+        model = RandomForestClassifier(n_estimators=1, max_depth=6, random_state=42) #n_estimators=200
         model.fit(X_train, y_train)
         models[interval] = (model, selected_features)
     return models
@@ -1420,20 +1420,20 @@ def train_ensemble_model(data, selected_features, model_filename='bullish_stacke
 
     # 11) Инициализация базовых моделей под 3 класса
     rf_model = CheckpointRandomForest(
-        n_estimators=100,
+        n_estimators=1,
         max_depth=4,
         min_samples_leaf=5
     )
 
     gb_model = CheckpointGradientBoosting(
-        n_estimators=100, #n_estimators=100
+        n_estimators=1, #n_estimators=100
         max_depth=3,
         learning_rate=0.1,
         subsample=0.8
     )
 
     xgb_model = CheckpointXGBoost(
-        n_estimators=100, #n_estimators=100
+        n_estimators=1, #n_estimators=100
         max_depth=3,
         subsample=0.8,
         min_child_weight=5,
@@ -1443,7 +1443,7 @@ def train_ensemble_model(data, selected_features, model_filename='bullish_stacke
     )
 
     lgbm_model = CheckpointLightGBM(
-        n_estimators=100, #n_estimators=100
+        n_estimators=1, #n_estimators=100
         num_leaves=16,
         learning_rate=0.1,
         min_data_in_leaf=5,
@@ -1452,7 +1452,7 @@ def train_ensemble_model(data, selected_features, model_filename='bullish_stacke
     )
 
     catboost_model = CheckpointCatBoost(
-        iterations=200, #iterations=200
+        iterations=1, #iterations=200
         depth=4,
         learning_rate=0.1,
         min_data_in_leaf=5,
@@ -1580,17 +1580,12 @@ if __name__ == "__main__":
     
     strategy = initialize_strategy()
     
-    symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
+    symbols = ['BTCUSDC', 'ETHUSDC']
         
     bullish_periods = [
-            {"start": "2017-06-01", "end": "2017-08-31"},
-            {"start": "2017-11-01", "end": "2018-01-16"},
-            {"start": "2020-11-01", "end": "2021-01-31"},
+            
             {"start": "2021-03-01", "end": "2021-04-30"},
-            {"start": "2021-08-15", "end": "2021-10-20"},
-            {"start": "2023-02-01", "end": "2023-03-31"},
-            {"start": "2023-03-15", "end": "2023-05-15"},
-            {"start": "2024-04-01", "end": "2024-06-30"}
+            
         ]
 
 

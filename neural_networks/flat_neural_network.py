@@ -1214,7 +1214,7 @@ def build_flat_neural_network(data, model_filename):
     # Обучение модели
     history = model.fit(
         train_dataset,
-        epochs=200, #200
+        epochs=1, #200
         validation_data=val_dataset,
         class_weight=class_weights,
         callbacks=[
@@ -1296,17 +1296,11 @@ if __name__ == "__main__":
     # Инициализация стратегии (TPU или CPU/GPU)
     strategy = initialize_strategy()
     
-    symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
+    symbols = ['BTCUSDC', 'ETHUSDC']
 
     # Периоды флэтового рынка
     flat_periods = [
-        {"start": "2019-02-01", "end": "2019-04-30"},
-        {"start": "2019-06-01", "end": "2019-08-31"},
         {"start": "2020-01-01", "end": "2020-02-29"},
-        {"start": "2020-07-01", "end": "2020-08-31"},
-        {"start": "2020-09-01", "end": "2020-10-31"},
-        {"start": "2021-09-01", "end": "2021-10-31"},
-        {"start": "2023-04-01", "end": "2023-05-31"}
     ]
 
 

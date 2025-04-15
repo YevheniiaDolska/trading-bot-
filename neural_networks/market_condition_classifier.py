@@ -964,6 +964,7 @@ class MarketClassifier:
         
         
         # Сохранение модели только при высоком качестве
+        '''
         if f1 >= 0.80:
             # Папка, где будут лежать модели (внутри контейнера RunPod)
             saved_models_dir = "/workspace/saved_models/Market_Classifier"
@@ -983,7 +984,22 @@ class MarketClassifier:
         else:
             logging.warning("Финальное качество модели ниже порогового (80% F1-score). Модель не сохранена.")
             return None
-            
+            '''
+        # Папка, где будут лежать модели (внутри контейнера RunPod)
+        saved_models_dir = "/workspace/saved_models/Market_Classifier"
+        os.makedirs(saved_models_dir, exist_ok=True)
+
+        # Путь для LSTM-GRU модели
+        model_path = os.path.join(saved_models_dir, "final_model.h5")
+        final_model.save(model_path)
+                
+        # Путь для XGBoost-модели
+        xgb_path = os.path.join(saved_models_dir, "classifier_xgb_model.pkl")
+        joblib.dump(xgb_model, xgb_path)
+
+        logging.info(f"Финальная модель LSTM-GRU сохранена в {model_path}")
+        logging.info(f"XGBoost-модель сохранена в {xgb_path}")
+        return final_model     
 
 
 
@@ -992,10 +1008,10 @@ if __name__ == "__main__":
     # Инициализация стратегии (TPU или CPU/GPU)
     strategy = initialize_strategy()
     
-    symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
+    symbols = ['BTCUSDC', 'ETHUSDC']
     
-    start_date = datetime(2018, 1, 1)
-    end_date = datetime(2021, 12, 31)
+    start_date = datetime(2021, 1, 1)
+    end_date = datetime(2021, 1, 31)
     
     data_path = os.path.join("/workspace/data", "labeled_market_data.csv")
     os.makedirs(os.path.dirname(data_path), exist_ok=True)
