@@ -911,6 +911,7 @@ def extract_features(data):
 
     # Базовые расчёты
     returns = data['close'].pct_change()
+    data['returns'] = returns
     # Группируем rolling-вычисления для 'volume'
     volume_agg = data['volume'].rolling(10).agg(['mean', 'std'])
     data['volume_ma'] = volume_agg['mean']
