@@ -912,10 +912,9 @@ def extract_features(data):
     # Базовые расчёты
     returns = data['close'].pct_change()
     # Группируем rolling-вычисления для 'volume'
-    volume_agg = data['volume'].rolling(10).agg(mean_vol='mean', std_vol='std')
-    data['volume_ma'] = volume_agg['mean_vol']
-    # Можно сразу вычислить volume_ratio (с использованием уже посчитанной скользящей средней)
-    data['volume_ratio'] = data['volume'] / (volume_agg['mean_vol'] + 1e-7)
+    volume_agg = data['volume'].rolling(10).agg(['mean', 'std'])
+    data['volume_ma'] = volume_agg['mean']
+    data['volume_ratio'] = data['volume'] / (volume_agg['mean'] + 1e-7)
     # Цена ускорения (diff от returns)
     price_acceleration = returns.diff()
 

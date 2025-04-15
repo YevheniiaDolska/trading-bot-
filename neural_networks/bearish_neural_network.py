@@ -247,65 +247,58 @@ def preprocess_market_data(data_dict):
 # Кастомная функция потерь для медвежьего рынка, ориентированная на минимизацию убытков
 def custom_profit_loss(y_true, y_pred):
     """
-    Функция потерь, адаптированная для уменьшения количества сигналов «Hold» и
-    стимулирования модели выдавать больше явных сигналов Buy/Sell.
+    Функция потерь для медвежьего рынка.
+    y_true: тензор истинных меток, где 0 = Hold, 1 = Buy, 2 = Sell.
+    y_pred: тензор предсказаний (распределение вероятностей) с shape (batch_size, 3).
     
-    Предположения:
-      - y_true: тензор истинных меток, где 0 = Hold, 1 = Buy, 2 = Sell.
-      - y_pred: тензор предсказаний (непрерывный) в диапазоне [0, 1]:
-            < 0.2  => Sell,
-          0.2-0.5 => Hold,
-            > 0.5  => Buy.
+    Преобразуем y_pred в скалярное предсказание, вычислив взвешенную сумму по классам.
     """
-    # Приводим y_true к float32
+    # Преобразование распределения softmax в скалярное предсказание:
+    # Здесь веса соответствуют номерам классов: 0.0 для Hold, 1.0 для Buy, 2.0 для Sell.
+    class_weights = tf.constant([0.0, 1.0, 2.0], dtype=tf.float32)
+    # При tensordot по оси=1 получаем результат shape (batch_size,)
+    y_pred_scalar = tf.tensordot(y_pred, class_weights, axes=1)
+    
+    # Приводим y_true к float32 и убеждаемся, что его shape = (batch_size,)
     y_true = tf.cast(y_true, dtype=tf.float32)
+    # Вычисляем разницу между скалярным предсказанием и истинным значением
+    diff = y_pred_scalar - y_true
     
-    # Разница между предсказанием и истинным значением
-    diff = y_pred - y_true
-    
-    # Логарифмический фактор для усиления больших ошибок
+    # Логарифмический коэффициент для усиления больших ошибок
     log_factor = tf.math.log1p(tf.abs(diff) + 1e-7)
     
     # Параметры штрафов (настраиваются эмпирически)
-    # Для случаев, когда истинный класс – Hold (0)
-    false_long_penalty = 1.0   # штраф за ложное срабатывание Buy (если y_true == 0, а y_pred > 0.5)
-    false_short_penalty = 1.0  # штраф за ложное срабатывание Sell (если y_true == 0, а y_pred < 0.2)
-    
-    # Для случаев, когда истинный класс – Buy (1) или Sell (2), но модель предсказывает Hold
-    missed_rally_penalty = 2.0  # штраф за пропущенный Buy (если y_true == 1, а y_pred <= 0.5)
-    missed_drop_penalty = 2.0   # штраф за пропущенный Sell (если y_true == 2, а y_pred >= 0.2)
+    false_long_penalty = 1.0   # штраф за ложное срабатывание Buy (если y_true == 0, а y_pred_scalar > 0.5)
+    false_short_penalty = 1.0  # штраф за ложное срабатывание Sell (если y_true == 0, а y_pred_scalar < 0.2)
+    missed_rally_penalty = 2.0  # штраф за пропущенный Buy (если y_true == 1, а y_pred_scalar <= 0.5)
+    missed_drop_penalty = 2.0   # штраф за пропущенный Sell (если y_true == 2, а y_pred_scalar >= 0.2)
     
     # CASE A: Если истинное значение Hold (0)
-    # - Если модель предсказывает >0.5 (Buy) – ложное срабатывание Buy
-    # - Если модель предсказывает <0.2 (Sell) – ложное срабатывание Sell
-    # - Иначе – минимальный штраф
     loss_hold = tf.where(
-        y_pred > 0.5,
+        y_pred_scalar > 0.5,
         false_long_penalty * tf.abs(diff) * log_factor,
         tf.where(
-            y_pred < 0.2,
+            y_pred_scalar < 0.2,
             false_short_penalty * tf.abs(diff) * log_factor,
             tf.abs(diff) * log_factor
         )
     )
     
     # CASE B: Если истинное значение Buy (1)
-    # - Если модель предсказывает значение <= 0.5 (то есть попадает в Hold или Sell) – штраф за пропущенный сигнал Buy
     loss_buy = tf.where(
-        y_pred <= 0.5,
+        y_pred_scalar <= 0.5,
         missed_rally_penalty * tf.abs(diff) * log_factor,
         tf.abs(diff) * log_factor
     )
     
     # CASE C: Если истинное значение Sell (2)
-    # - Если модель предсказывает значение >= 0.2 (то есть попадает в Hold или Buy) – штраф за пропущенный сигнал Sell
     loss_sell = tf.where(
-        y_pred >= 0.2,
+        y_pred_scalar >= 0.2,
         missed_drop_penalty * tf.abs(diff) * log_factor,
         tf.abs(diff) * log_factor
     )
     
-    # Объединяем случаи по условию y_true
+    # Объединяем случаи в зависимости от истинной метки
     base_loss = tf.where(
         tf.equal(y_true, 0.0),
         loss_hold,
@@ -316,21 +309,21 @@ def custom_profit_loss(y_true, y_pred):
         )
     )
     
-    # Штраф за неуверенные предсказания: если y_pred находится между 0.3 и 0.7, добавляем штраф
+    # Штраф за неуверенные предсказания: если предсказание находится между 0.3 и 0.7
     uncertainty_penalty = tf.where(
-        tf.logical_and(y_pred > 0.3, y_pred < 0.7),
+        tf.logical_and(y_pred_scalar > 0.3, y_pred_scalar < 0.7),
         0.5 * tf.abs(diff) * log_factor,
         0.0
     )
     
-    # Штраф за задержку реакции: учитываем, что модель должна быстрее реагировать
-    time_penalty = 0.1 * tf.abs(diff) * tf.cast(tf.range(tf.shape(diff)[0]), tf.float32) / tf.cast(tf.shape(diff)[0], tf.float32)
+    # Штраф за задержку реакции:
+    batch_size = tf.shape(diff)[0]
+    time_indices = tf.cast(tf.range(batch_size), tf.float32)
+    time_penalty = 0.1 * tf.abs(diff) * time_indices / tf.cast(batch_size, tf.float32)
     
-    # Штраф за транзакционные издержки: учитываем резкие изменения предсказаний между соседними точками
-    transaction_cost = 0.001 * tf.reduce_sum(tf.abs(y_pred[1:] - y_pred[:-1]))
+    # Штраф за транзакционные издержки: резкие изменения предсказаний между соседними точками
+    transaction_cost = 0.001 * tf.reduce_sum(tf.abs(y_pred_scalar[1:] - y_pred_scalar[:-1]))
     
-    # Общая потеря: сумма базового штрафа, штрафа за неуверенность и задержку реакции,
-    # плюс транзакционные издержки (которые добавляются после усреднения по батчу)
     total_loss = tf.reduce_mean(base_loss + uncertainty_penalty + time_penalty) + transaction_cost
     
     return total_loss
