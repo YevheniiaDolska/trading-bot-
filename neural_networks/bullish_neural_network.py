@@ -127,11 +127,13 @@ def check_feature_quality(X, y):
         logging.info(f"Типы данных в X после приведения:\n{X.dtypes}")
     elif isinstance(X, np.ndarray):
         logging.info("X представлен в виде NumPy массива.")
-        if X.dtype == 'object':
-            X = pd.DataFrame(X)
-            for col in X.columns:
-                X[col] = pd.to_numeric(X[col], errors='coerce')
-            logging.info(f"Типы данных в X после приведения:\n{X.dtypes}")
+        # Преобразуем массив в DataFrame с авто-сгенерированными именами столбцов
+        X = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(X.shape[1])])
+        # Если тип колонок все же 'object', приводим их к числовому типу
+        for col in X.columns:
+            X[col] = pd.to_numeric(X[col], errors='coerce')
+        logging.info(f"Типы данных в X после приведения:\n{X.dtypes}")
+
     else:
         logging.error(f"Ошибка: X имеет неизвестный тип: {type(X)}. Ожидается DataFrame или NumPy массив.")
         raise ValueError(f"Ошибка: Неверный формат данных X ({type(X)})")
