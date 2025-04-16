@@ -329,7 +329,7 @@ class CheckpointLightGBM(LGBMClassifier):
     def fit(self, X, y, **kwargs):
         logging.info("[LightGBM] Начало обучения с чекпоинтами")
         model_path = os.path.join(self._checkpoint_path, "lightgbm_checkpoint")
-        final_checkpoint = os.path.join("/workspace/saved_models", "bearish_stacked_ensemble_model.pkl")
+        final_checkpoint = os.path.join("/workspace/saved_models", "bullish_stacked_ensemble_model.pkl")
 
         
         # Проверяем существующий чекпоинт
