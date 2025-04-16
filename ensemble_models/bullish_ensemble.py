@@ -978,7 +978,12 @@ def extract_features(data):
 
     return data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
-
+def clean_data(X, y):
+    logging.info("Очистка данных от бесконечных значений и NaN")
+    mask = np.isfinite(X).all(axis=1)
+    X_clean = X[mask]
+    y_clean = y[mask]
+    return X_clean, y_clean
 
 # Удаление выбросов
 def remove_outliers(data):
