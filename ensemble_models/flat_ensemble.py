@@ -995,7 +995,7 @@ def remove_outliers(data):
 
 def add_clustering_feature(data):
     features_for_clustering = [
-        'close', 'volume', 'rsi_3', 'rsi_5', 'atr_3', 'sma_3', 'ema_5', 'ema_8',
+        'close', 'volume', 'rsi_3', 'rsi_5', 'atr_5', 'sma_3', 'ema_5', 'ema_8',
         'bb_width', 'returns', 'log_returns'
     ]
     max_for_kmeans = 200_000
