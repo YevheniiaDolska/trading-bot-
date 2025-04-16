@@ -1359,10 +1359,18 @@ def train_ensemble_model(data, selected_features, model_filename='flat_stacked_e
     combined_data_cleaned = remove_outliers(combined_data)
     removed_count = combined_data.shape[0] - combined_data_cleaned.shape[0]
     logging.info(f"Удалено выбросов: {removed_count} строк")
+
+    # сбросить индексы после удаления выбросов
+    combined_data_cleaned = combined_data_cleaned.reset_index(drop=True)
+
     X_clean = combined_data_cleaned.drop(columns=['target'])
     y_clean = combined_data_cleaned['target']
     logging.info(f"После remove_outliers: X = {X_clean.shape}, y = {y_clean.shape}")
-    assert X_clean.index.equals(y_clean.index), "Индексы X и y не совпадают после удаления выбросов!"
+    assert X_clean.shape[0] == y_clean.shape[0], "Число строк X и y не совпадает после очистки!"
+
+    X_clean = X_clean.reset_index(drop=True)
+    y_clean = y_clean.reset_index(drop=True)
+
     
     # Балансировка классов
     X_resampled, y_resampled = balance_classes(X_clean, y_clean)
