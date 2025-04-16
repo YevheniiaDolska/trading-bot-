@@ -862,29 +862,27 @@ def extract_features(data):
     logging.info("Извлечение признаков для флэтового рынка")
     data = data.copy()
     
-    # 1. Базовые метрики
+    # 1. Рассчитываем базовые метрики
     data['returns'] = data['close'].pct_change()
     data['log_returns'] = np.log(data['close'] / data['close'].shift(1))
-    
-    # Расчёт динамических порогов на основе последних наблюдений
-    window_size = 1000  # число наблюдений для расчёта процентилей
-    
-    # Вычисляем скользящее среднее и стандартное отклонение для returns
-    data['returns_mean'] = data['returns'].rolling(window=window_size, min_periods=window_size).mean()
-    data['returns_std'] = data['returns'].rolling(window=window_size, min_periods=window_size).std()
 
-    # Вычисляем сдвинутые возвраты (будущие изменения, которые хотим спрогнозировать)
-    data['returns_shift'] = data['returns'].shift(-1)
+    # Возможный вариант амплификации – если без масштабирования сигналы слишком малы:
+    scaling_factor = 1e4  # пробуйте менять этот коэффициент
+    data['returns_scaled'] = data['returns'] * scaling_factor
 
-    # Вычисляем z‑score для будущего изменения
+    window_size = 1000
+    data['returns_mean'] = data['returns_scaled'].rolling(window=window_size, min_periods=window_size).mean()
+    data['returns_std'] = data['returns_scaled'].rolling(window=window_size, min_periods=window_size).std()
+    data['returns_shift'] = data['returns_scaled'].shift(-1)
     data['z_score'] = (data['returns_shift'] - data['returns_mean']) / data['returns_std']
 
-    # Определяем сигналы на основе z‑score
-    upper_z = 1.0  # порог для покупки
-    lower_z = -1.0  # порог для продажи
+    # Понижаем пороги для z_score
+    upper_z = 0.5  # или пробуйте еще ниже, например, 0.2
+    lower_z = -0.5
 
     data['target'] = np.where(data['z_score'] > upper_z, 2,
                        np.where(data['z_score'] < lower_z, 1, 0))
+
     
     # 2. Метрики диапазона
     data['range_width'] = data['high'] - data['low']
