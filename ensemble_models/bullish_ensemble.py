@@ -802,6 +802,18 @@ def load_bullish_data(symbols, bullish_periods, interval="1m", save_path="binanc
     logging.info(f"💾 Обновлённые данные сохранены в {save_path} (итоговых строк: {len(combined)})")
     return all_data
 
+def convert_df_dtypes(df):
+    # Конвертируем float64 в float32
+    float_cols = df.select_dtypes(include=['float64']).columns
+    for col in float_cols:
+        df[col] = df[col].astype(np.float32)
+    # Конвертируем int64 в int32
+    int_cols = df.select_dtypes(include=['int64']).columns
+    for col in int_cols:
+        df[col] = df[col].astype(np.int32)
+    return df
+
+
 '''def aggregate_to_2min(data):
     """
     Агрегация данных с интервала 1 минута до 2 минут.
