@@ -868,8 +868,23 @@ def extract_features(data):
     
     # Расчёт динамических порогов на основе последних наблюдений
     window_size = 1000  # число наблюдений для расчёта процентилей
-    data['buy_threshold'] = data['returns'].rolling(window=window_size).quantile(0.90)
-    data['sell_threshold'] = data['returns'].rolling(window=window_size).quantile(0.10)
+    
+    # Вычисляем скользящее среднее и стандартное отклонение для returns
+    data['returns_mean'] = data['returns'].rolling(window=window_size, min_periods=window_size).mean()
+    data['returns_std'] = data['returns'].rolling(window=window_size, min_periods=window_size).std()
+
+    # Вычисляем сдвинутые возвраты (будущие изменения, которые хотим спрогнозировать)
+    data['returns_shift'] = data['returns'].shift(-1)
+
+    # Вычисляем z‑score для будущего изменения
+    data['z_score'] = (data['returns_shift'] - data['returns_mean']) / data['returns_std']
+
+    # Определяем сигналы на основе z‑score
+    upper_z = 1.0  # порог для покупки
+    lower_z = -1.0  # порог для продажи
+
+    data['target'] = np.where(data['z_score'] > upper_z, 2,
+                       np.where(data['z_score'] < lower_z, 1, 0))
     
     # 2. Метрики диапазона
     data['range_width'] = data['high'] - data['low']
