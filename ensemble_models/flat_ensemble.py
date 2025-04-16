@@ -987,13 +987,17 @@ def clean_data(X, y):
 
 # Удаление выбросов
 def remove_outliers(data):
-    # Отбираем только числовые признаки (исключая булевы)
-    numeric_cols = data.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns
+    # Исключаем 'target' из расчета выбросов
+    numeric_cols = data.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns.difference(['target'])
     Q1 = data[numeric_cols].quantile(0.25)
     Q3 = data[numeric_cols].quantile(0.75)
     IQR = Q3 - Q1
+    # Стандартная маска – True, если строка не является выбросом
     mask = ~((data[numeric_cols] < (Q1 - 1.5 * IQR)) | (data[numeric_cols] > (Q3 + 1.5 * IQR))).any(axis=1)
+    # Если строка имеет сигнал (target != 0), её оставляем независимо от маски
+    mask = mask | (data['target'] != 0)
     return data[mask]
+
 
 
 def add_clustering_feature(data):
