@@ -917,7 +917,7 @@ def extract_features(data):
     # 9. Целевая переменная для флэтового рынка
     volatility = data['returns'].rolling(20).std()
     avg_volatility = volatility.rolling(100).mean()
-    threshold = 0.0002
+    threshold = 0.00015
     data['target'] = np.where(
         (data['returns'].shift(-1) > threshold) &
         (data['volume'] > data['volume_ma']) &
