@@ -938,24 +938,6 @@ def extract_features(data):
     volatility = data['returns'].rolling(20).std()
     avg_volatility = volatility.rolling(100).mean()
     
-    # 9. Целевая переменная для флэтового рынка с динамическими порогами:
-    # Здесь динамические пороги, рассчитанные ранее (buy_threshold и sell_threshold),
-    # будут использоваться для определения сигналов
-    data['target'] = np.where(
-        (data['returns'].shift(-1) > data['buy_threshold']) &
-        (data['volume'] > 0.9 * data['volume_ma']) &
-        (data['rsi_3'] < 45) &
-        (data['bb_position'] < 0.35),
-        2,
-        np.where(
-            (data['returns'].shift(-1) < data['sell_threshold']) &
-            (data['volume'] > 0.9 * data['volume_ma']) &
-            (data['rsi_3'] > 55) &
-            (data['bb_position'] > 0.65),
-            1,
-            0
-        )
-    )
     
     # Создаем словарь признаков
     features = {}
