@@ -866,6 +866,11 @@ def extract_features(data):
     data['returns'] = data['close'].pct_change()
     data['log_returns'] = np.log(data['close'] / data['close'].shift(1))
     
+    # Расчёт динамических порогов на основе последних наблюдений
+    window_size = 1000  # число наблюдений для расчёта процентилей
+    data['buy_threshold'] = data['returns'].rolling(window=window_size).quantile(0.90)
+    data['sell_threshold'] = data['returns'].rolling(window=window_size).quantile(0.10)
+    
     # 2. Метрики диапазона
     data['range_width'] = data['high'] - data['low']
     # Группируем rolling для range_width с окном 10 и 20
@@ -917,18 +922,21 @@ def extract_features(data):
     # 9. Целевая переменная для флэтового рынка
     volatility = data['returns'].rolling(20).std()
     avg_volatility = volatility.rolling(100).mean()
-    threshold = 0.000105
+    
+    # 9. Целевая переменная для флэтового рынка с динамическими порогами:
+    # Здесь динамические пороги, рассчитанные ранее (buy_threshold и sell_threshold),
+    # будут использоваться для определения сигналов
     data['target'] = np.where(
-        (data['returns'].shift(-1) > threshold) &
-        (data['volume'] > data['volume_ma']) &
-        (data['rsi_3'] < 40) &
-        (data['bb_position'] < 0.3),
+        (data['returns'].shift(-1) > data['buy_threshold']) &
+        (data['volume'] > 0.9 * data['volume_ma']) &
+        (data['rsi_3'] < 45) &
+        (data['bb_position'] < 0.35),
         2,
         np.where(
-            (data['returns'].shift(-1) < -threshold) &
-            (data['volume'] > data['volume_ma']) &
-            (data['rsi_3'] > 60) &
-            (data['bb_position'] > 0.7),
+            (data['returns'].shift(-1) < data['sell_threshold']) &
+            (data['volume'] > 0.9 * data['volume_ma']) &
+            (data['rsi_3'] > 55) &
+            (data['bb_position'] > 0.65),
             1,
             0
         )
