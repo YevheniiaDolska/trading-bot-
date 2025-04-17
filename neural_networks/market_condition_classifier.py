@@ -271,10 +271,9 @@ class MarketClassifier:
 
         
         # Объемные индикаторы: группируем rolling для volume с окном 20
-        data[['volume_sma','volume_std']] = data['volume'].rolling(window=20).agg(
-            volume_sma='mean',
-            volume_std='std'
-        )
+        vs = data['volume'].rolling(window=20)
+        data['volume_sma'] = vs.mean()
+        data['volume_std'] = vs.std()
         data['volume_ratio'] = data['volume'] / data['volume_sma']
         
         # Трендовые индикаторы
