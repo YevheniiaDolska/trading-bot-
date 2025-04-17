@@ -106,7 +106,7 @@ class MarketClassifier:
         self.base_url = "https://data.binance.vision/data/spot/monthly/klines/{symbol}/1m/"
         
         
-    def apply_in_chunks(df, func, chunk_size=100000):
+    def apply_in_chunks(self, df, func, chunk_size=100000):
         """
         Применяет функцию func к DataFrame по чанкам заданного размера.
         Если df не является DataFrame, возвращает func(df).
