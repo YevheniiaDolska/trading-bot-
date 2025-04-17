@@ -337,7 +337,7 @@ class MarketClassifier:
             chunk.dropna(inplace=True)
             # Если данные в чанке все ещё очень большие, делим их дополнительно
             # Здесь вызываем apply_in_chunks для дополнительной обработки
-            chunk = apply_in_chunks(chunk, process_subchunk, chunk_size=5000)
+            chunk = self.apply_in_chunks(chunk, process_subchunk, chunk_size=5000)
             
             label_mapping = {'bullish': 0, 'bearish': 1, 'flat': 2}
             chunk['market_type'] = chunk['market_type'].map(label_mapping)
