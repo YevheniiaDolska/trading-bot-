@@ -321,58 +321,58 @@ class MarketClassifier:
         return scaler, features
 
     def data_generator_split(self, data_path, scaler, features, batch_size, chunk_size=10000, 
-                         split='train', train_fraction=0.8, random_seed=42):
-    """
-    Генератор, который читает CSV-файл чанками, выполняет обработку данных и делит их 
-    на тренировочную и валидационную выборки согласно train_fraction.
-    """
-    chunk_counter = 0
-    # Функция для дополнительной обработки каждого подчанка
-    def process_subchunk(sub_df):
-        # Добавляем индикаторы и удаляем выбросы для подчанка
-        sub_df = self.add_indicators(sub_df)
-        sub_df = self.remove_outliers(sub_df)
-        return sub_df
+                             split='train', train_fraction=0.8, random_seed=42):
+        """
+        Генератор, который читает CSV-файл чанками, выполняет обработку данных и делит их 
+        на тренировочную и валидационную выборки согласно train_fraction.
+        """
+        chunk_counter = 0
+        # Функция для дополнительной обработки каждого подчанка
+        def process_subchunk(sub_df):
+            # Добавляем индикаторы и удаляем выбросы для подчанка
+            sub_df = self.add_indicators(sub_df)
+            sub_df = self.remove_outliers(sub_df)
+            return sub_df
 
-    for chunk in pd.read_csv(data_path, chunksize=chunk_size):
-        chunk.dropna(inplace=True)
-        # Если данные в чанке все ещё очень большие, делим их дополнительно
-        # Здесь вызываем apply_in_chunks для дополнительной обработки
-        chunk = apply_in_chunks(chunk, process_subchunk, chunk_size=5000)
-        
-        label_mapping = {'bullish': 0, 'bearish': 1, 'flat': 2}
-        chunk['market_type'] = chunk['market_type'].map(label_mapping)
-        chunk.dropna(subset=['market_type'], inplace=True)
-        
-        X_chunk = chunk[features].values
-        y_chunk = chunk['market_type'].values.astype(int)
-        n_samples = X_chunk.shape[0]
-        
-        r = np.random.RandomState(random_seed + chunk_counter)
-        random_vals = r.rand(n_samples)
-        mask = random_vals < train_fraction if split == 'train' else random_vals >= train_fraction
-        X_selected = X_chunk[mask]
-        y_selected = y_chunk[mask]
-        if X_selected.shape[0] == 0:
+        for chunk in pd.read_csv(data_path, chunksize=chunk_size):
+            chunk.dropna(inplace=True)
+            # Если данные в чанке все ещё очень большие, делим их дополнительно
+            # Здесь вызываем apply_in_chunks для дополнительной обработки
+            chunk = apply_in_chunks(chunk, process_subchunk, chunk_size=5000)
+            
+            label_mapping = {'bullish': 0, 'bearish': 1, 'flat': 2}
+            chunk['market_type'] = chunk['market_type'].map(label_mapping)
+            chunk.dropna(subset=['market_type'], inplace=True)
+            
+            X_chunk = chunk[features].values
+            y_chunk = chunk['market_type'].values.astype(int)
+            n_samples = X_chunk.shape[0]
+            
+            r = np.random.RandomState(random_seed + chunk_counter)
+            random_vals = r.rand(n_samples)
+            mask = random_vals < train_fraction if split == 'train' else random_vals >= train_fraction
+            X_selected = X_chunk[mask]
+            y_selected = y_chunk[mask]
+            if X_selected.shape[0] == 0:
+                chunk_counter += 1
+                continue
+            
+            X_scaled = scaler.transform(X_selected)
+            indices = np.arange(X_scaled.shape[0])
+            r_shuffle = np.random.RandomState(random_seed + chunk_counter + 1000)
+            r_shuffle.shuffle(indices)
+            X_scaled = X_scaled[indices]
+            y_selected = y_selected[indices]
+            
+            n_sel = X_scaled.shape[0]
+            for i in range(0, n_sel, batch_size):
+                batch_idx = slice(i, i + batch_size)
+                X_batch = X_scaled[batch_idx]
+                y_batch = y_selected[batch_idx]
+                X_batch = np.expand_dims(X_batch, axis=1)
+                yield X_batch.astype(np.float32), y_batch.astype(np.int32)
+            
             chunk_counter += 1
-            continue
-        
-        X_scaled = scaler.transform(X_selected)
-        indices = np.arange(X_scaled.shape[0])
-        r_shuffle = np.random.RandomState(random_seed + chunk_counter + 1000)
-        r_shuffle.shuffle(indices)
-        X_scaled = X_scaled[indices]
-        y_selected = y_selected[indices]
-        
-        n_sel = X_scaled.shape[0]
-        for i in range(0, n_sel, batch_size):
-            batch_idx = slice(i, i + batch_size)
-            X_batch = X_scaled[batch_idx]
-            y_batch = y_selected[batch_idx]
-            X_batch = np.expand_dims(X_batch, axis=1)
-            yield X_batch.astype(np.float32), y_batch.astype(np.int32)
-        
-        chunk_counter += 1
 
 
     def prepare_training_dataset(self, data_path, scaler, features, batch_size, chunk_size=10000, 
@@ -1011,7 +1011,7 @@ if __name__ == "__main__":
     symbols = ['BTCUSDC', 'ETHUSDC']
     
     start_date = datetime(2021, 1, 1)
-    end_date = datetime(2021, 1, 31)
+    end_date = datetime(2021, 1, 30)
     
     data_path = os.path.join("/workspace/data", "labeled_market_data.csv")
     os.makedirs(os.path.dirname(data_path), exist_ok=True)
