@@ -250,7 +250,7 @@ class MarketClassifier:
         data['adx'] = ta.adx(data['high'], data['low'], data['close'], length=7)['ADX_7']
         
         # Множественные MA для определения тренда
-        for period in [5, 10, 15, 20]:
+        for period in [5, 10, 15, 20, 50]:
             data[f'sma_{period}'] = ta.sma(data['close'], length=period)
             data[f'ema_{period}'] = ta.ema(data['close'], length=period)
         
