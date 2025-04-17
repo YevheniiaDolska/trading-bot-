@@ -263,12 +263,12 @@ class MarketClassifier:
         data['willr'] = ta.willr(data['high'], data['low'], data['close'], length=14)
         
         # Волатильность: группируем rolling для close с окном 10 для Bollinger Bands
-        data[['bb_upper','bb_middle','bb_lower']] = data['close'].rolling(10).agg(
-            bb_upper=lambda x: ta.bbands(x, length=10, std=2)['BBU_20_2.0'],
-            bb_middle=lambda x: ta.bbands(x, length=10, std=2)['BBM_20_2.0'],
-            bb_lower=lambda x: ta.bbands(x, length=10, std=2)['BBL_20_2.0']
-        )
-        data['bb_width'] = (data['bb_upper'] - data['bb_lower']) / data['bb_middle']
+        bb = ta.bbands(data['close'], length=10, std=2)
+        data['bb_upper']  = bb[f'BBU_10_2.0']
+        data['bb_middle'] = bb[f'BBM_10_2.0']
+        data['bb_lower']  = bb[f'BBL_10_2.0']
+        data['bb_width']  = (data['bb_upper'] - data['bb_lower']) / data['bb_middle']
+
         
         # Объемные индикаторы: группируем rolling для volume с окном 20
         data[['volume_sma','volume_std']] = data['volume'].rolling(window=20).agg(
