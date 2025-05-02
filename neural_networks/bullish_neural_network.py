@@ -1137,6 +1137,7 @@ def build_bullish_neural_network(data):
     X_balanced, y_balanced = balance_classes(X, y)
 
     # 8) Масштабирование уже сбалансированных данных
+    scaler = RobustScaler()
     X_scaled = scaler.fit_transform(X_balanced)
     
     # Разделение данных
