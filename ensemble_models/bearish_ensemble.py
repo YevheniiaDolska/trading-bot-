@@ -708,11 +708,19 @@ def load_bearish_data(symbols, bearish_periods, interval="1m", save_path="binanc
     if os.path.exists(save_path):
         try:
             chunks = []
-            for chunk in pd.read_csv(save_path,
-                                     index_col='timestamp',
-                                     parse_dates=['timestamp'],
-                                     on_bad_lines='skip',
-                                     chunksize=CHUNK_SIZE):
+            for chunk in pd.read_csv(
+                temp_file_path,
+                index_col='timestamp',
+                parse_dates=['timestamp'],
+                on_bad_lines='skip',
+                chunksize=CHUNK_SIZE,
+                low_memory=False,
+                dtype={
+                    "open": float, "high": float, "low": float,
+                    "close": float, "volume": float, "quote_asset_volume": float,
+                    "number_of_trades": int, "taker_buy_base_asset_volume": float,
+                    "taker_buy_quote_asset_volume": float
+                }):
                 # Сброс индекса, чтобы гарантировать наличие столбца с датами
                 chunk = chunk.reset_index(drop=False)
                 if 'timestamp' not in chunk.columns:
@@ -976,7 +984,14 @@ def extract_features(data):
 
     # Объёмные индикаторы
     data['obv'] = OnBalanceVolumeIndicator(data['close'], data['volume']).on_balance_volume()
-    data['cmf'] = ChaikinMoneyFlowIndicator(data['high'], data['low'], data['close'], data['volume']).chaikin_money_flow()
+    # CHAID: guard against zero‐division in CMF
+    try:
+        data['cmf'] = ChaikinMoneyFlowIndicator(
+            data['high'], data['low'], data['close'], data['volume']
+        ).chaikin_money_flow()
+    except ZeroDivisionError:
+        logging.warning("Zero division in CMF; filling cmf=0")
+        data['cmf'] = 0
     data['volume_change'] = data['volume'].pct_change()
     data['volume_ma_ratio'] = data['volume'] / data['volume'].rolling(20).mean()
 

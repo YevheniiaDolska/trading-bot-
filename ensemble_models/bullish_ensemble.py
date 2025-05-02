@@ -1600,7 +1600,7 @@ if __name__ == "__main__":
     
     symbols = ['BTCUSDC', 'ETHUSDC', 'BNBUSDC','XRPUSDC', 'ADAUSDC', 'SOLUSDC', 'DOTUSDC', 'LINKUSDC', 'TONUSDC', 'NEARUSDC']
         
-        bullish_periods = [
+    bullish_periods = [
             {"start": "2017-06-01", "end": "2017-08-31"},
             {"start": "2017-11-01", "end": "2018-01-16"},
             {"start": "2020-11-01", "end": "2021-01-31"},
