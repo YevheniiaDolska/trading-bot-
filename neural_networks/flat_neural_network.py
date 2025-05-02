@@ -1115,7 +1115,7 @@ def build_flat_neural_network(data, model_filename):
         def branch(x):
             x = LSTM(256, return_sequences=True)(x)
             x = BatchNormalization()(x)
-            return Dropout(0.3)(x)
+            return Dropout(0.2)(x)
         b1, b2, b3 = branch(inp), branch(inp), branch(inp)
         x = Add()([b1, b2, b3])
         x = LSTM(256)(x)

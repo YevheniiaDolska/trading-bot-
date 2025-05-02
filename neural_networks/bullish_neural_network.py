@@ -1217,6 +1217,12 @@ def build_bullish_neural_network(data):
 
         model = Model(inputs, outputs)
         logging.info(f"Слои модели: {[layer.name for layer in model.layers]}")
+        
+        # Определяем метрику упущенной прибыли:
+        def bull_profit_metric(y_true, y_pred):
+            # y_true: 0=HOLD,1=BUY,2=SELL; y_pred — вероятности
+            missed = tf.where(y_true > y_pred, y_true - y_pred, 0)
+            return tf.reduce_mean(missed)
 
         # Компиляция модели с двумя метриками
         model.compile(
