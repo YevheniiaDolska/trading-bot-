@@ -1139,8 +1139,8 @@ def build_flat_neural_network(data, model_filename):
     cb_reg = ModelCheckpoint(checkpoint_regular, save_weights_only=True, verbose=1)
     cb_best = ModelCheckpoint(checkpoint_best, save_weights_only=True, save_best_only=True,
                                monitor='val_flat_trading_metric', mode='min', verbose=1)
-    cb_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, mode='min')
-    cb_es = EarlyStopping(monitor='val_flat_trading_metric', patience=5, restore_best_weights=True)
+    cb_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=3, mode='min')
+    cb_es = EarlyStopping(monitor='val_flat_trading_metric', patience=15, restore_best_weights=True)
 
     # Веса классов
     class_weights = {0:1.0, 1:2.5, 2:2.5}

@@ -1266,8 +1266,8 @@ def build_bearish_neural_network(data, model_filename):
     cb_reg  = ModelCheckpoint(checkpoint_path_regular, save_weights_only=True, verbose=1)
     cb_best = ModelCheckpoint(checkpoint_path_best, save_weights_only=True, save_best_only=True,
                                 monitor='val_loss', mode='min', verbose=1)
-    cb_lr   = ReduceLROnPlateau('val_loss', factor=0.5, patience=5, verbose=1)
-    cb_es   = EarlyStopping('val_loss', patience=5, restore_best_weights=True)
+    cb_lr   = ReduceLROnPlateau('val_loss', factor=0.5, patience=3, verbose=1)
+    cb_es   = EarlyStopping('val_loss', patience=15, restore_best_weights=True)
     class_weights = {0:1.0, 1:2.0, 2:3.0}
     history = model.fit(train_ds, epochs=200, validation_data=val_ds,
                         class_weight=class_weights,
