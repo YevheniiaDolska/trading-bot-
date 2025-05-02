@@ -915,26 +915,56 @@ def load_last_saved_model(model_filename):
         return None
     
     
-def balance_classes(X, y):
+def balance_classes(X, y, max_for_smote=300_000):
+    """
+    Балансировка классов с поддержкой numpy и pandas.
+
+    Параметры:
+    X: numpy.ndarray или pandas.DataFrame — признаки
+    y: numpy.ndarray или pandas.Series — метки
+    max_for_smote: int — максимальный размер выборки для SMOTETomek
+
+    Возвращает:
+    X_resampled, y_resampled
+    """
     logging.info("Начало балансировки классов")
-    logging.info(f"Размеры данных до балансировки: X={X.shape}, y={y.shape}")
+    logging.info(f"Размеры данных до балансировки: X={getattr(X, 'shape', None)}, y={getattr(y, 'shape', None)}")
     logging.info(f"Уникальные классы в y: {np.unique(y, return_counts=True)}")
-    
-    max_for_smote = 300_000
-    if len(X) > max_for_smote:
-        X_sample = X.sample(n=max_for_smote, random_state=42)
-        y_sample = y.loc[X_sample.index]
+
+    # Определяем тип и делаем подвыборку, если нужно
+    if isinstance(X, pd.DataFrame):
+        # Для pandas DataFrame
+        if len(X) > max_for_smote:
+            X_sample = X.sample(n=max_for_smote, random_state=42)
+            # Поддерживаем pandas.Series или numpy.ndarray для y
+            if isinstance(y, pd.Series):
+                y_sample = y.loc[X_sample.index]
+            else:
+                # y — numpy.ndarray, используем iloc по индексам DataFrame
+                y_sample = y[X_sample.index.to_numpy()]
+        else:
+            X_sample = X
+            y_sample = y
     else:
-        X_sample = X
-        y_sample = y
+        # Для numpy.ndarray или других типов
+        n_samples = X.shape[0]
+        if n_samples > max_for_smote:
+            idx = np.random.choice(n_samples, size=max_for_smote, replace=False)
+            X_sample = X[idx]
+            y_sample = y[idx]
+        else:
+            X_sample = X
+            y_sample = y
 
-    if X.shape[0] == 0 or y.shape[0] == 0:
-        raise ValueError("Данные для балансировки пусты. Проверьте исходные данные и фильтры.")
+    # Проверяем наличие данных
+    if len(X_sample) == 0 or len(y_sample) == 0:
+        raise ValueError("Данные для балансировки пусты. Проверьте входные данные.")
 
+    # Применяем SMOTETomek
     smote_tomek = SMOTETomek(random_state=42)
     X_resampled, y_resampled = smote_tomek.fit_resample(X_sample, y_sample)
 
-    logging.info(f"Размеры данных после балансировки: X={X_resampled.shape}, y={y_resampled.shape}")
+    logging.info(f"Размеры данных после балансировки: X={getattr(X_resampled, 'shape', None)}, y={getattr(y_resampled, 'shape', None)}")
     return X_resampled, y_resampled
 
 
@@ -1013,282 +1043,136 @@ def build_flat_neural_network(data, model_filename):
         model_filename (str): Имя файла для сохранения модели.
 
     Returns:
-        ensemble_model (dict): Словарь с ключами "nn_model", "xgb_model", "feature_extractor",
-                               "ensemble_weight_nn", "ensemble_weight_xgb" и "scaler".
+        (ensemble_model: dict, scaler: RobustScaler)
     """
     # Создаем директории для чекпоинтов
     os.makedirs("checkpoints", exist_ok=True)
-    
     network_name = "flat_neural_network"
-    checkpoint_path_regular = f"checkpoints/{network_name}_checkpoint_epoch_{{epoch:02d}}.h5"
-    checkpoint_path_best = f"checkpoints/{network_name}_best_model.h5"
-    
-    if os.path.exists("flat_neural_network.h5"):
+    checkpoint_regular = f"checkpoints/{network_name}_checkpoint_epoch_{{epoch:02d}}.h5"
+    checkpoint_best = f"checkpoints/{network_name}_best_model.h5"
+
+    # Попытка загрузить существующую модель
+    if os.path.exists(model_filename):
         try:
-            model = load_model("flat_neural_network.h5", custom_objects={"custom_profit_loss": custom_profit_loss})
-            logging.info("Обученная модель загружена из 'flat_neural_network.h5'. Пропускаем обучение.")
-            # Если модель уже загружена, возвращаем её вместе с сохраненным масштабировщиком (если он есть)
+            model = load_model(model_filename, custom_objects={"custom_profit_loss": custom_profit_loss})
+            logging.info(f"Загружена модель из '{model_filename}', обучение пропущено.")
             return {"nn_model": model}, None
         except Exception as e:
-            logging.error(f"Ошибка при загрузке модели: {e}")
-            logging.info("Начинаем обучение с нуля.")
-    else:
-        logging.info("Сохраненная модель не найдена. Начинаем обучение с нуля.")
-    
-    
-    logging.info("Начало обучения нейросети для флэтового рынка")
-    
-    # Выделяем признаки и целевые переменные
-    features = [col for col in data.columns if col not in ['target', 'symbol', 'timestamp'] 
-                and pd.api.types.is_numeric_dtype(data[col])]
-    
-    # Логирование для отладки
-    logging.info(f"Выбранные признаки: {features}")
-    logging.info(f"Типы данных признаков:\n{data[features].dtypes}")
-    
-    try:
-        X = data[features].astype(float).values
-        y = data['target'].astype(float).values
-        
-        logging.info(f"Форма X: {X.shape}, тип данных X: {X.dtype}")
-        logging.info(f"Форма y: {y.shape}, тип данных y: {y.dtype}")
-        
-        # Проверка на наличие невалидных значений
-        X_isvalid = np.isfinite(X)
-        if not X_isvalid.all():
-            invalid_count = np.sum(~X_isvalid)
-            logging.warning(f"Найдено {invalid_count} невалидных значений в данных")
-            
-        # Удаление NaN и бесконечностей
-        mask = np.isfinite(X).all(axis=1)
-        X = X[mask]
-        y = y[mask]
-        
-        logging.info(f"После очистки - форма X: {X.shape}, форма y: {y.shape}")
-        
-    except Exception as e:
-        logging.error(f"Ошибка при подготовке данных: {e}")
-        raise
+            logging.error(f"Ошибка загрузки модели: {e}")
+            logging.info("Тренировка будет запущена заново.")
 
-    # Дополнительный контроль качества: вывод статистики и оценка важности признаков
-    X_df = pd.DataFrame(X, columns=features)
-    logging.info("Статистика признаков до балансировки:")
+    logging.info("Начало тренировки Flat NN")
+    # Выбор признаков
+    features = [c for c in data.columns if c not in ['target','symbol','timestamp'] and pd.api.types.is_numeric_dtype(data[c])]
+    logging.info(f"Используемые признаки: {features}")
+
+    # Подготовка X и y
+    X_df = data[features].astype(float).copy()
+    y = data['target'].astype(int).copy()
+    # Удаление NaN и бесконечностей
+    mask = X_df.notnull().all(axis=1) & np.isfinite(X_df).all(axis=1)
+    X_df, y = X_df.loc[mask], y.loc[mask]
+    logging.info(f"После очистки: X={X_df.shape}, y={y.shape}")
+
+    # Анализ качества признаков
     logging.info(X_df.describe().to_string())
-    check_feature_quality(X, y)
-    
-    # Балансировка классов
-    X_resampled, y_resampled = balance_classes(X, y)
-    
-    # Разделение данных
-    X_train, X_val, y_train, y_val = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42)
-    
-    # Масштабирование данных
+    check_feature_quality(X_df.values, y.values)
+
+    # Балансировка
+    X_bal, y_bal = balance_classes(X_df, y)
+    logging.info(f"После балансировки: X={X_bal.shape}, y={y_bal.shape}")
+
+    # Разделение
+    X_train_df, X_val_df, y_train, y_val = train_test_split(
+        X_bal, y_bal, test_size=0.2, random_state=42, stratify=y_bal
+    )
+    logging.info(f"Train: {X_train_df.shape}, Val: {X_val_df.shape}")
+
+    # Масштабирование
     scaler = RobustScaler()
-    X_train_scaled = scaler.fit_transform(X_train).reshape((X_train.shape[0], X_train.shape[1], 1))
-    X_val_scaled = scaler.transform(X_val).reshape((X_val.shape[0], X_val.shape[1], 1))
-    
-    # Создание tf.data.Dataset
-    train_dataset = tf.data.Dataset.from_tensor_slices((X_train_scaled, y_train)).batch(32).prefetch(tf.data.AUTOTUNE)
-    val_dataset = tf.data.Dataset.from_tensor_slices((X_val_scaled, y_val)).batch(32).prefetch(tf.data.AUTOTUNE)
-    
-    # Использование стратегии (теперь для GPU, без TPU)
+    X_train_np = scaler.fit_transform(X_train_df)
+    X_val_np = scaler.transform(X_val_df)
+    # reshape для LSTM
+    X_train = X_train_np.reshape(X_train_np.shape[0], 1, X_train_np.shape[1])
+    X_val = X_val_np.reshape(X_val_np.shape[0], 1, X_val_np.shape[1])
+    logging.info(f"После reshape: X_train={X_train.shape}, X_val={X_val.shape}")
+
+    # Создаем датасеты
+    train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train)).batch(32).prefetch(tf.data.AUTOTUNE)
+    val_ds = tf.data.Dataset.from_tensor_slices((X_val, y_val)).batch(32).prefetch(tf.data.AUTOTUNE)
+
+    # Стратегия
     try:
-        # Здесь можно заменить на MirroredStrategy для GPU
         strategy = tf.distribute.MirroredStrategy()
-        logging.info("Используется GPU стратегия: MirroredStrategy")
-    except Exception as e:
-        logging.error(f"Ошибка при инициализации GPU стратегии: {e}")
+        logging.info("MirroredStrategy активна.")
+    except:
         strategy = tf.distribute.get_strategy()
-        logging.info("Используем стандартную стратегию.")
-    
+        logging.info("Default strategy.")
+
     with strategy.scope():
-        inputs = Input(shape=(X_train_scaled.shape[1], X_train_scaled.shape[2]))  # (timesteps, num_features)
-        
-        # Первая ветвь - анализ ценовых микродвижений
-        x1 = LSTM(256, return_sequences=True)(inputs)
-        x1 = BatchNormalization()(x1)
-        x1 = Dropout(0.3)(x1)
-        
-        # Вторая ветвь - анализ объемов и волатильности
-        x2 = LSTM(256, return_sequences=True)(inputs)
-        x2 = BatchNormalization()(x2)
-        x2 = Dropout(0.3)(x2)
-        
-        # Третья ветвь - анализ рыночного контекста
-        x3 = LSTM(256, return_sequences=True)(inputs)
-        x3 = BatchNormalization()(x3)
-        x3 = Dropout(0.3)(x3)
-        
-        # Объединение ветвей
-        x = Add()([x1, x2, x3])
-        
-        # Основной LSTM для принятия решений
-        x = LSTM(256, return_sequences=False)(x)
-        x = BatchNormalization()(x)
-        x = Dropout(0.3)(x)
-        
-        # Dense слои
+        inp = Input(shape=(X_train.shape[1], X_train.shape[2]))
+        # три ветви
+        def branch(x):
+            x = LSTM(256, return_sequences=True)(x)
+            x = BatchNormalization()(x)
+            return Dropout(0.3)(x)
+        b1, b2, b3 = branch(inp), branch(inp), branch(inp)
+        x = Add()([b1, b2, b3])
+        x = LSTM(256)(x)
+        x = BatchNormalization()(x); x = Dropout(0.3)(x)
         x = Dense(256, activation='relu')(x)
-        x = BatchNormalization()(x)
-        x = Dropout(0.3)(x)
-        
-        # Добавляем слой эмбеддингов с именем "embedding_layer" для дальнейшего ансамблирования
-        x = Dense(128, activation='relu', name="embedding_layer")(x)
-        x = BatchNormalization()(x)
-        x = Dropout(0.3)(x)
-        
+        x = BatchNormalization()(x); x = Dropout(0.3)(x)
+        x = Dense(128, activation='relu', name='embedding_layer')(x)
+        x = BatchNormalization()(x); x = Dropout(0.3)(x)
         x = Dense(64, activation='relu')(x)
         x = BatchNormalization()(x)
-        
-        # 3 выхода: 0=HOLD, 1=SELL, 2=BUY
-        outputs = Dense(3, activation='softmax')(x)
-        
-        model = tf.keras.models.Model(inputs, outputs)
-        
-        # Компилируем с нашей новой функцией потерь
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            loss=custom_profit_loss,
-            metrics=[]
-        )
-        
-        # Дополнительная метрика для контроля (flat trading metric)
+        out = Dense(3, activation='softmax')(x)
+        model = Model(inp, out)
+        # метрика и компиляция
         def flat_trading_metric(y_true, y_pred):
-            true_range = tf.reduce_max(y_true) - tf.reduce_min(y_true)
-            pred_range = tf.reduce_max(y_pred) - tf.reduce_min(y_pred)
-            range_error = tf.abs(true_range - pred_range)
-            return range_error
-        
-        model.compile(optimizer=Adam(learning_rate=0.001), loss=custom_profit_loss, metrics=[flat_trading_metric])
-    
-    # Попытка загрузить последний сохранённый промежуточный чекпоинт
-    latest_checkpoint = glob.glob(f"checkpoints/{network_name}_checkpoint_epoch_*.h5")
-    if latest_checkpoint:
-        try:
-            model.load_weights(latest_checkpoint[-1])
-            logging.info(f"Загружены веса из последнего регулярного чекпоинта: {latest_checkpoint[-1]}")
-        except Exception as e:
-            logging.error(f"Ошибка загрузки регулярного чекпоинта: {e}")
-    
-    # Проверяем наличие лучшего чекпоинта
-    if os.path.exists(checkpoint_path_best):
-        try:
-            model.load_weights(checkpoint_path_best)
-            logging.info(f"Лучший чекпоинт найден: {checkpoint_path_best}. После обучения промежуточные чекпоинты будут удалены.")
-        except:
-            logging.info("Лучший чекпоинт пока не создан. Это ожидаемо, если обучение ещё не завершено.")
-    
-    # Настройка коллбеков
-    checkpoint_every_epoch = ModelCheckpoint(
-        filepath=checkpoint_path_regular,
-        save_weights_only=True,
-        save_best_only=False,
-        verbose=1
-    )
-    
-    checkpoint_best_model = ModelCheckpoint(
-        filepath=checkpoint_path_best,
-        save_weights_only=True,
-        save_best_only=True,
-        monitor='flat_trading_metric',
-        mode='min',
-        verbose=1
-    )
-    
-    tensorboard_callback = TensorBoard(log_dir=f"logs/{time.time()}")
-    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=1e-5, mode='min')
-    early_stopping = EarlyStopping(
-        monitor='val_flat_trading_metric',
-        patience=5,
-        restore_best_weights=True,
-        mode='min'
-    )
-    
-    # Настройка весов классов для несбалансированных данных
-    class_weights = {
-           0: 1.0,  # HOLD
-           1: 2.5,  # SELL
-           2: 2.5,  # BUY
-    }
-    
-    # Обучение модели
+            tr = tf.reduce_max(y_true, axis=0) - tf.reduce_min(y_true, axis=0)
+            pr = tf.reduce_max(y_pred, axis=0) - tf.reduce_min(y_pred, axis=0)
+            return tf.abs(tr - pr)
+        model.compile(optimizer=Adam(1e-3), loss=custom_profit_loss, metrics=[flat_trading_metric])
+
+    # Callbacks
+    cb_reg = ModelCheckpoint(checkpoint_regular, save_weights_only=True, verbose=1)
+    cb_best = ModelCheckpoint(checkpoint_best, save_weights_only=True, save_best_only=True,
+                               monitor='val_flat_trading_metric', mode='min', verbose=1)
+    cb_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, mode='min')
+    cb_es = EarlyStopping(monitor='val_flat_trading_metric', patience=5, restore_best_weights=True)
+
+    # Веса классов
+    class_weights = {0:1.0, 1:2.5, 2:2.5}
+
+    # Обучение
     history = model.fit(
-        train_dataset,
-        epochs=200, #200
-        validation_data=val_dataset,
+        train_ds, epochs=200, validation_data=val_ds,
         class_weight=class_weights,
-        callbacks=[
-            early_stopping,
-            checkpoint_every_epoch,
-            checkpoint_best_model,
-            tensorboard_callback,
-            reduce_lr
-        ]
+        callbacks=[cb_reg, cb_best, cb_lr, cb_es]
     )
-    
-    logging.info("Очистка промежуточных чекпоинтов...")
-    for checkpoint in glob.glob(f"checkpoints/{network_name}_checkpoint_epoch_*.h5"):
-        if checkpoint != checkpoint_path_best:
-            os.remove(checkpoint)
-            logging.info(f"Удалён чекпоинт: {checkpoint}")
-    logging.info("Очистка завершена. Сохранена только лучшая модель.")
-    
-    
-    # Этап ансамблирования: извлечение эмбеддингов и обучение XGBoost
-    logging.info("Этап ансамблирования: извлечение эмбеддингов и обучение XGBoost.")
-    try:
-        # Создаем модель-эмбеддингов, используя слой с именем 'embedding_layer'
-        feature_extractor = Model(inputs=model.input, outputs=model.get_layer("embedding_layer").output)
-        embeddings_train = feature_extractor.predict(X_train_scaled)
-        embeddings_val = feature_extractor.predict(X_val_scaled)
-        logging.info(f"Эмбеддинги получены: embeddings_train.shape = {embeddings_train.shape}")
-        
-        # Обучаем XGBoost классификатор на эмбеддингах
-        xgb_model = train_xgboost_on_embeddings(embeddings_train, y_train)
-        logging.info("XGBoost классификатор успешно обучен на эмбеддингах.")
-        
-        # На валидационной выборке объединяем прогнозы
-        nn_pred_proba = model.predict(X_val_scaled)
-        xgb_pred_proba = xgb_model.predict_proba(embeddings_val)
-        ensemble_pred_proba = 0.5 * nn_pred_proba + 0.5 * xgb_pred_proba
-        ensemble_pred_classes = np.argmax(ensemble_pred_proba, axis=1)
-        ensemble_f1 = f1_score(y_val, ensemble_pred_classes, average='weighted')
-        logging.info(f"Этап ансамблирования: F1-score ансамбля на валидации = {ensemble_f1:.4f}")
-        
-        # Сохраняем XGBoost модель отдельно
-        xgb_save_path = os.path.join("/workspace/saved_models", "xgb_model_flat.pkl")
-        os.makedirs(os.path.dirname(xgb_save_path), exist_ok=True)
-        joblib.dump(xgb_model, xgb_save_path)
-        logging.info(f"XGBoost-модель сохранена в '{xgb_save_path}'")
+    # Очистка старых чекпоинтов
+    for f in glob.glob(f"checkpoints/{network_name}_checkpoint_epoch_*.h5"): 
+        if f!=checkpoint_best: os.remove(f)
 
-        
-        # Формируем итоговый ансамбль в виде словаря
-        ensemble_model = {
-            "nn_model": model,
-            "xgb_model": xgb_model,
-            "feature_extractor": feature_extractor,
-            "ensemble_weight_nn": 0.5,
-            "ensemble_weight_xgb": 0.5
-        }
-    except Exception as e:
-        logging.error(f"Ошибка на этапе ансамблирования: {e}")
-        ensemble_model = {"nn_model": model}
-        feature_extractor = None
-    
-    # Сохраняем финальную модель нейросети
-    try:
-        model_save_path = os.path.join("/workspace/saved_models", "flat_neural_network.h5")
-        os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
-        model.save(model_save_path)
-        logging.info(f"Модель успешно сохранена в '{model_save_path}'")
-        output_dir = os.path.join("/workspace/output", "flat_neural_network")
-        copy_output("Neural_Flat", output_dir)
-    except Exception as e:
-        logging.error(f"Ошибка при сохранении модели: {e}")
+    # Ансамблирование
+    feat_ext = Model(model.input, model.get_layer('embedding_layer').output)
+    emb_tr = feat_ext.predict(X_train)
+    emb_vl = feat_ext.predict(X_val)
+    xgb_m = train_xgboost_on_embeddings(emb_tr, y_train)
+    nn_pred = model.predict(X_val)
+    xgb_pred = xgb_m.predict_proba(emb_vl)
+    ens = 0.5*nn_pred + 0.5*xgb_pred
+    classes = np.argmax(ens, axis=1)
+    logging.info(f"F1 ensemble: {f1_score(y_val, classes, average='weighted')}")
 
-    
-    # Возвращаем итоговый ансамбль и масштабировщик
-    return {"ensemble_model": ensemble_model, "scaler": scaler}
+    # Сохранение
+    model.save(model_filename)
+    joblib.dump(xgb_m, os.path.join(os.path.dirname(model_filename),'xgb_flat.pkl'))
+
+    return {"nn_model":model, "xgb_model":xgb_m, "feature_extractor":feat_ext,
+            "ensemble_weight_nn":0.5, "ensemble_weight_xgb":0.5}, scaler
+
 
 
 

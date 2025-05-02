@@ -1021,27 +1021,56 @@ def load_last_saved_model(model_filename):
 
 
 
-def balance_classes(X, y):
+def balance_classes(X, y, max_for_smote=300_000):
+    """
+    Балансировка классов с поддержкой numpy и pandas.
+
+    Параметры:
+    X: numpy.ndarray или pandas.DataFrame — признаки
+    y: numpy.ndarray или pandas.Series — метки
+    max_for_smote: int — максимальный размер выборки для SMOTETomek
+
+    Возвращает:
+    X_resampled, y_resampled
+    """
     logging.info("Начало балансировки классов")
-    logging.info(f"Размеры данных до балансировки: X={X.shape}, y={y.shape}")
+    logging.info(f"Размеры данных до балансировки: X={getattr(X, 'shape', None)}, y={getattr(y, 'shape', None)}")
     logging.info(f"Уникальные классы в y: {np.unique(y, return_counts=True)}")
-    
-    max_for_smote = 300_000
-    if len(X) > max_for_smote:
-        # Возьмём случайную подвыборку строк, чтобы SMOTE не вис на 10+ млн
-        X_sample = X.sample(n=max_for_smote, random_state=42)
-        y_sample = y.loc[X_sample.index]  # y должен быть Series с тем же индексом
+
+    # Определяем тип и делаем подвыборку, если нужно
+    if isinstance(X, pd.DataFrame):
+        # Для pandas DataFrame
+        if len(X) > max_for_smote:
+            X_sample = X.sample(n=max_for_smote, random_state=42)
+            # Поддерживаем pandas.Series или numpy.ndarray для y
+            if isinstance(y, pd.Series):
+                y_sample = y.loc[X_sample.index]
+            else:
+                # y — numpy.ndarray, используем iloc по индексам DataFrame
+                y_sample = y[X_sample.index.to_numpy()]
+        else:
+            X_sample = X
+            y_sample = y
     else:
-        X_sample = X
-        y_sample = y
+        # Для numpy.ndarray или других типов
+        n_samples = X.shape[0]
+        if n_samples > max_for_smote:
+            idx = np.random.choice(n_samples, size=max_for_smote, replace=False)
+            X_sample = X[idx]
+            y_sample = y[idx]
+        else:
+            X_sample = X
+            y_sample = y
 
-    if X.shape[0] == 0 or y.shape[0] == 0:
-        raise ValueError("Данные для балансировки пусты. Проверьте исходные данные и фильтры.")
+    # Проверяем наличие данных
+    if len(X_sample) == 0 or len(y_sample) == 0:
+        raise ValueError("Данные для балансировки пусты. Проверьте входные данные.")
 
+    # Применяем SMOTETomek
     smote_tomek = SMOTETomek(random_state=42)
     X_resampled, y_resampled = smote_tomek.fit_resample(X_sample, y_sample)
 
-    logging.info(f"Размеры данных после балансировки: X={X_resampled.shape}, y={y_resampled.shape}")
+    logging.info(f"Размеры данных после балансировки: X={getattr(X_resampled, 'shape', None)}, y={getattr(y_resampled, 'shape', None)}")
     return X_resampled, y_resampled
 
 
@@ -1104,15 +1133,14 @@ def build_bullish_neural_network(data):
     # Контроль качества признаков: вычисляем SelectKBest и логируем топ-10 признаков
     check_feature_quality(X, y)
     
-    # Масштабирование данных
-    scaler = RobustScaler()
-    X_scaled = scaler.fit_transform(X)
-    
-    # Балансировка данных
-    X_resampled, y_resampled = balance_classes(X_scaled, y)
+    # 7) Балансировка классов на DataFrame до масштабирования
+    X_balanced, y_balanced = balance_classes(X, y)
+
+    # 8) Масштабирование уже сбалансированных данных
+    X_scaled = scaler.fit_transform(X_balanced)
     
     # Разделение данных
-    X_train, X_val, y_train, y_val = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42)
+    X_train, X_val, y_train, y_val = train_test_split(X_scaled, y_balanced, test_size=0.2, random_state=42)
     
     # Формирование последовательностей
     def create_sequences(X, y, timesteps=10):
