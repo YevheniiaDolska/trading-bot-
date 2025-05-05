@@ -1156,10 +1156,10 @@ def ensemble_predict(nn_model, xgb_model, feature_extractor, X_seq, weight_nn=0.
 
 # Обучение нейронной сети
 def build_bullish_neural_network(data):
-    # 0. подготовка директорий
+    # 0. Директории
     os.makedirs("checkpoints", exist_ok=True)
 
-    # 1. попытка загрузить готовую модель
+    # 1. Попытка загрузить модель
     if os.path.exists("bullish_neural_network.h5"):
         try:
             model = tf.keras.models.load_model(
@@ -1170,7 +1170,7 @@ def build_bullish_neural_network(data):
             return {"ensemble_model": {"nn_model": model}, "scaler": None}
         except Exception as e:
             logging.error(f"Failed to load model: {e}")
-            logging.info("Re-training from scratch.")
+            logging.info("Retraining from scratch.")
     else:
         logging.info("No saved model found, starting training.")
 
@@ -1185,20 +1185,20 @@ def build_bullish_neural_network(data):
     X = imputer.fit_transform(X_df)
     check_feature_quality(X, y)
 
-    # 3. Балансировка и масштабирование
-    X_bal, y_bal = balance_classes(X, y)
+    # 3. Масштабирование
     scaler = RobustScaler(quantile_range=(10, 90))
-    X_scaled = scaler.fit_transform(X_bal)
+    X_scaled = scaler.fit_transform(X)
 
-    # 4. Train/Val split
+    # 4. Train/Val split с стратификацией
     X_train, X_val, y_train, y_val = train_test_split(
-        X_scaled, y_bal, test_size=0.2, random_state=42, stratify=y_bal
+        X_scaled, y, test_size=0.2, random_state=42, stratify=y
     )
-    # лог распределения классов
-    counts = np.bincount(y_train)
-    logging.info(f"Class distribution: {counts}")
+    logging.info(f"Class distribution train: {np.bincount(y_train)}, val: {np.bincount(y_val)}")
 
-    # 5. Создание временных последовательностей
+    # 5. Балансировка только train
+    X_train_bal, y_train_bal = balance_classes(X_train, y_train)
+
+    # 6. Создание последовательностей
     def create_sequences(X_arr, y_arr, timesteps=10):
         Xs, ys = [], []
         for i in range(len(X_arr) - timesteps):
@@ -1207,46 +1207,39 @@ def build_bullish_neural_network(data):
         return np.array(Xs, dtype=np.float32), np.array(ys, dtype=np.int32)
 
     timesteps = 10
-    time_weights = np.exp(np.linspace(-1, 0, timesteps))
-    X_train_seq, y_train_seq = create_sequences(X_train, y_train, timesteps)
-    X_val_seq,   y_val_seq   = create_sequences(X_val,   y_val,   timesteps)
+    weights = np.exp(np.linspace(-1, 0, timesteps))
+    X_train_seq, y_train_seq = create_sequences(X_train_bal, y_train_bal, timesteps)
+    X_val_seq,   y_val_seq   = create_sequences(X_val,       y_val,       timesteps)
 
-    # добавить шум к тренировочным данным
-    def add_noise(x, noise_factor=0.05):
-        return x + np.random.normal(0, noise_factor, x.shape)
-    X_train_seq = add_noise(X_train_seq, noise_factor=0.05)
+    # 7. Шум для train
+    def add_noise(x, factor=0.05): return x + np.random.normal(0, factor, x.shape)
+    X_train_seq = add_noise(X_train_seq, factor=0.05)
 
-    # применить временные веса
-    X_train_seq *= time_weights.reshape(1, -1, 1)
-    X_val_seq   *= time_weights.reshape(1, -1, 1)
+    # 8. Временные веса
+    X_train_seq *= weights.reshape(1, -1, 1)
+    X_val_seq   *= weights.reshape(1, -1, 1)
 
-    # 6. Построение tf.data.Dataset
+    # 9. Dataset
     train_ds = (tf.data.Dataset.from_tensor_slices((X_train_seq, y_train_seq))
                 .shuffle(1024).batch(32).prefetch(tf.data.AUTOTUNE))
     val_ds = (tf.data.Dataset.from_tensor_slices((X_val_seq, y_val_seq))
               .batch(32).prefetch(tf.data.AUTOTUNE))
 
-    # 7. Strategy
+    # 10. Strategy
     gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
-        for g in gpus:
-            tf.config.experimental.set_memory_growth(g, True)
+        for g in gpus: tf.config.experimental.set_memory_growth(g, True)
         strategy = tf.distribute.MirroredStrategy()
     else:
         strategy = tf.distribute.get_strategy()
 
-    # 8. Модель и компиляция
+    # 11. Модель
     with strategy.scope():
         inp = Input(shape=(timesteps, X_train_seq.shape[2]))
         x = LSTM(128, return_sequences=True)(inp)
-        x = BatchNormalization()(x)
-        x = Dropout(0.4)(x)
-        x = LSTM(64)(x)
-        x = BatchNormalization()(x)
-        x = Dropout(0.4)(x)
-        x = Dense(64, activation='relu')(x)
-        x = BatchNormalization()(x)
-        x = Dropout(0.3)(x)
+        x = BatchNormalization()(x); x = Dropout(0.4)(x)
+        x = LSTM(64)(x); x = BatchNormalization()(x); x = Dropout(0.4)(x)
+        x = Dense(64, activation='relu')(x); x = BatchNormalization()(x); x = Dropout(0.3)(x)
         emb = Dense(32, activation='relu', name='embedding_layer')(x)
         x = BatchNormalization()(emb)
         out = Dense(3, activation='softmax')(x)
@@ -1254,58 +1247,39 @@ def build_bullish_neural_network(data):
 
         def bull_profit_metric(y_true, y_pred):
             missed = tf.where(y_pred < tf.expand_dims(y_true,1),
-                              tf.expand_dims(y_true,1) - y_pred, 0)
+                              tf.expand_dims(y_true,1)-y_pred, 0)
             return tf.reduce_mean(missed)
 
-        optimizer = Adam(
-            learning_rate=5e-4,
-            clipnorm=1.0,
-            clipvalue=0.5
-        )
+        optimizer = Adam(learning_rate=5e-4, clipnorm=1.0, clipvalue=0.5)
         model.compile(
             optimizer=optimizer,
             loss=custom_profit_loss,
             metrics=[bull_profit_metric, CategoricalAccuracy(name='accuracy')]
         )
-        # загрузка чекпоинта
         try:
             model.load_weights(checkpoint_path_regular.format(epoch=0))
         except:
             pass
 
-    # 9. Callbacks
-    early_stopping = EarlyStopping(
-        monitor='val_loss', min_delta=1e-3, patience=15,
-        restore_best_weights=True, verbose=1
-    )
-    reduce_lr = ReduceLROnPlateau(
-        monitor='val_loss', factor=0.5, patience=5,
-        min_lr=1e-6, verbose=1
-    )
-    ckpt_epoch = ModelCheckpoint(
-        filepath=checkpoint_path_regular, save_weights_only=True,
-        save_best_only=False, verbose=1
-    )
-    ckpt_best = ModelCheckpoint(
-        filepath=checkpoint_path_best, monitor='val_loss',
-        save_weights_only=True, save_best_only=True, verbose=1
-    )
-    tb_cb = TensorBoard(log_dir=f"logs/{time.time()}")
-    f1_cb = LambdaCallback(on_epoch_end=lambda epoch, logs: logging.info(
-        f"val_f1: {f1_score(y_val_seq, np.argmax(model.predict(X_val_seq),axis=1), average='weighted'):.4f}"
-    ))
-    warmup_cb = WarmUpLearningRateScheduler(
-        warmup_epochs=5, initial_lr=1e-4, target_lr=5e-4
-    )
-    # compute class weights
+    # 12. Callbacks
+    early = EarlyStopping(monitor='val_loss', min_delta=1e-3, patience=15,
+                          restore_best_weights=True, verbose=1)
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5,
+                                 patience=5, min_lr=1e-6, verbose=1)
+    ck1 = ModelCheckpoint(filepath=checkpoint_path_regular, save_weights_only=True,
+                           save_best_only=False, verbose=1)
+    ck2 = ModelCheckpoint(filepath=checkpoint_path_best, monitor='val_loss',
+                           save_weights_only=True, save_best_only=True, verbose=1)
+    tb = TensorBoard(log_dir=f"logs/{time.time()}")
+    f1cb = LambdaCallback(on_epoch_end=lambda e,l: logging.info(
+        f"val_f1: {f1_score(y_val_seq, np.argmax(model.predict(X_val_seq),axis=1), average='weighted'):.4f}"))
+    warmup = WarmUpLearningRateScheduler(warmup_epochs=5, initial_lr=1e-4, target_lr=5e-4)
     classes = np.unique(y_train_seq)
     cw = compute_class_weight('balanced', classes=classes, y=y_train_seq)
-    class_weights = {int(c): cw[i] for i, c in enumerate(classes)}
+    class_weights = {int(c): cw[i] for i,c in enumerate(classes)}
+    callbacks = [early, reduce_lr, ck1, ck2, tb, f1cb, warmup]
 
-    callbacks = [early_stopping, reduce_lr, ckpt_epoch,
-                 ckpt_best, tb_cb, f1_cb, warmup_cb]
-
-    # 10. Training
+    # 13. Training
     history = model.fit(
         train_ds,
         epochs=100,
@@ -1316,36 +1290,39 @@ def build_bullish_neural_network(data):
         verbose=1
     )
 
-    # 11. Cleanup checkpoints
+    # 14. Cleanup
     for ck in glob.glob(f"checkpoints/{network_name}_checkpoint_epoch_*.h5"):
-        if ck != checkpoint_path_best:
-            os.remove(ck)
+        if ck!=checkpoint_path_best: os.remove(ck)
 
-    # 12. Save model
+    # 15. Save
     os.makedirs("/workspace/saved_models", exist_ok=True)
     model.save("/workspace/saved_models/bullish_neural_network.h5")
     copy_output("Neural_Bullish", "/workspace/output/bullish_neural_network")
 
-    # 13. Ensemble
+    # 16. Ensemble
     try:
-        feat_ext = Model(inputs=model.input,
-                         outputs=model.get_layer('embedding_layer').output)
+        feat_ext = Model(inputs=model.input, outputs=model.get_layer('embedding_layer').output)
         emb_train = feat_ext.predict(X_train_seq)
-        emb_val   = feat_ext.predict(X_val_seq)
+        emb_val = feat_ext.predict(X_val_seq)
         xgb_model = train_xgboost_on_embeddings(emb_train, y_train_seq)
         nn_p = model.predict(X_val_seq)
         xgb_p = xgb_model.predict_proba(emb_val)
-        ens = np.argmax(0.5*nn_p + 0.5*xgb_p, axis=1)
-        logging.info(f"Ensemble F1: {f1_score(y_val_seq, ens, average='weighted'):.4f}")
+        # patch for missing classes
+        xgb_classes = xgb_model.classes_
+        full = np.zeros((xgb_p.shape[0],3),dtype=xgb_p.dtype)
+        for i,cls in enumerate(xgb_classes): full[:,int(cls)] = xgb_p[:,i]
+        ens = np.argmax(0.5*nn_p + 0.5*full,axis=1)
+        logging.info(f"Ensemble F1: {f1_score(y_val_seq,ens,average='weighted'):.4f}")
         joblib.dump(xgb_model, "/workspace/saved_models/xgb_model_bullish.pkl")
-        ensemble_model = {"nn_model": model, "xgb_model": xgb_model,
-                          "feature_extractor": feat_ext,
-                          "ensemble_weight_nn": 0.5, "ensemble_weight_xgb": 0.5}
+        ensemble_model={"nn_model":model,"xgb_model":xgb_model,
+                        "feature_extractor":feat_ext,
+                        "ensemble_weight_nn":0.5,"ensemble_weight_xgb":0.5}
     except Exception as e:
         logging.error(f"Ensemble error: {e}")
-        ensemble_model = {"nn_model": model}
+        ensemble_model={"nn_model":model}
 
-    return {"ensemble_model": ensemble_model, "scaler": scaler}
+    return {"ensemble_model":ensemble_model, "scaler":scaler}
+
 
 
 
