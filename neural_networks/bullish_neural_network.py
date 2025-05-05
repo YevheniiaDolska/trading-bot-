@@ -1166,22 +1166,22 @@ def build_bullish_neural_network(data):
     X = imputer.fit_transform(X_df)
     check_feature_quality(X, y)
 
-    # 4. Train/Val split с стратификацией
+    # 3. Train/Val split с стратификацией
     X_train, X_val, y_train, y_val = train_test_split(
-         X_scaled, y,
-         test_size=0.2,
-         random_state=42,
-         stratify=y
-     )
+        X, y,
+        test_size=0.2,
+        random_state=42,
+        stratify=y
+    )
     logging.info(f"Labels train/val: {np.bincount(y_train)} / {np.bincount(y_val)}")
 
-    # 5. Балансировка только train
-    X_train_bal, y_train_bal = balance_classes(X_train, y_train)
-    
-     # 6. Применяем тот же scaler ко всем (train_bal и val на том же пространстве)
+    # 4. Масштабирование train и val одним RobustScaler
     scaler = RobustScaler(quantile_range=(10, 90))
-    X_train_bal = scaler.fit_transform(X_train_bal)
-    X_val        = scaler.transform(X_val)
+    X_train = scaler.fit_transform(X_train)
+    X_val   = scaler.transform(X_val)
+
+    # 5. Балансировка **только** train-выборки
+    X_train_bal, y_train_bal = balance_classes(X_train, y_train)
 
     # 6. Создание последовательностей
     def create_sequences(X_arr, y_arr, timesteps=10):
