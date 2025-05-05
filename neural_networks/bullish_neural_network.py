@@ -393,37 +393,18 @@ def custom_profit_loss(y_true, y_pred):
 
 def custom_profit_loss(y_true, y_pred):
     """
-    Simplified and stabilized loss function for bullish market prediction
-    that prioritizes avoiding missed opportunities
+    Простая взвешенная категор. кросс-энтропия:
+      HOLD (0)×1, BUY (1)×3, SELL (2)×2
     """
-    # Convert to float32
-    y_true = tf.cast(y_true, dtype=tf.float32)
-    
-    # Get one-hot encoded target
-    y_true_one_hot = tf.one_hot(tf.cast(y_true, tf.int32), depth=3)
-    
-    # Add epsilon for numerical stability
-    epsilon = 1e-7
-    y_pred = tf.clip_by_value(y_pred, epsilon, 1 - epsilon)
-    
-    # Base categorical crossentropy loss
-    base_loss = -tf.reduce_sum(y_true_one_hot * tf.math.log(y_pred), axis=-1)
-    
-    # Class-specific weights - penalize missed buy signals (class 1) more
-    class_weights = tf.where(
-        tf.equal(y_true, 1), 
-        3.0,  # Higher weight for missed buy opportunities
-        tf.where(
-            tf.equal(y_true, 2),
-            2.0,  # Medium weight for missed sell opportunities
-            1.0   # Lower weight for missed hold
-        )
-    )
-    
-    # Apply weights to base loss
-    weighted_loss = base_loss * class_weights
-    
-    return tf.reduce_mean(weighted_loss)
+    y_true = tf.cast(y_true, tf.int32)
+    y_ohe  = tf.one_hot(y_true, 3)
+    eps    = 1e-7
+    y_pred = tf.clip_by_value(y_pred, eps, 1-eps)
+    base   = -tf.reduce_sum(y_ohe * tf.math.log(y_pred), axis=1)
+    # class weights
+    cw = tf.where(y_true==1, 3.0,
+                  tf.where(y_true==2, 2.0, 1.0))
+    return tf.reduce_mean(base * cw)
 
 
 
@@ -1185,18 +1166,22 @@ def build_bullish_neural_network(data):
     X = imputer.fit_transform(X_df)
     check_feature_quality(X, y)
 
-    # 3. Масштабирование
-    scaler = RobustScaler(quantile_range=(10, 90))
-    X_scaled = scaler.fit_transform(X)
-
     # 4. Train/Val split с стратификацией
     X_train, X_val, y_train, y_val = train_test_split(
-        X_scaled, y, test_size=0.2, random_state=42, stratify=y
-    )
-    logging.info(f"Class distribution train: {np.bincount(y_train)}, val: {np.bincount(y_val)}")
+         X_scaled, y,
+         test_size=0.2,
+         random_state=42,
+         stratify=y
+     )
+    logging.info(f"Labels train/val: {np.bincount(y_train)} / {np.bincount(y_val)}")
 
     # 5. Балансировка только train
     X_train_bal, y_train_bal = balance_classes(X_train, y_train)
+    
+     # 6. Применяем тот же scaler ко всем (train_bal и val на том же пространстве)
+    scaler = RobustScaler(quantile_range=(10, 90))
+    X_train_bal = scaler.fit_transform(X_train_bal)
+    X_val        = scaler.transform(X_val)
 
     # 6. Создание последовательностей
     def create_sequences(X_arr, y_arr, timesteps=10):
@@ -1210,10 +1195,13 @@ def build_bullish_neural_network(data):
     weights = np.exp(np.linspace(-1, 0, timesteps))
     X_train_seq, y_train_seq = create_sequences(X_train_bal, y_train_bal, timesteps)
     X_val_seq,   y_val_seq   = create_sequences(X_val,       y_val,       timesteps)
+    logging.info(f"y_train_seq: {np.unique(y_train_seq, return_counts=True)}")
+    logging.info("y_val_seq:  ", np.unique(y_val_seq,   return_counts=True))
 
     # 7. Шум для train
-    def add_noise(x, factor=0.05): return x + np.random.normal(0, factor, x.shape)
-    X_train_seq = add_noise(X_train_seq, factor=0.05)
+    def add_noise(x, factor=0.01):
+        return x + np.random.normal(0, factor, x.shape)
+    X_train_seq = add_noise(X_train_seq, factor=0.01)
 
     # 8. Временные веса
     X_train_seq *= weights.reshape(1, -1, 1)
@@ -1237,8 +1225,8 @@ def build_bullish_neural_network(data):
     with strategy.scope():
         inp = Input(shape=(timesteps, X_train_seq.shape[2]))
         x = LSTM(128, return_sequences=True)(inp)
-        x = BatchNormalization()(x); x = Dropout(0.4)(x)
-        x = LSTM(64)(x); x = BatchNormalization()(x); x = Dropout(0.4)(x)
+        x = BatchNormalization()(x); x = Dropout(0.2)(x)
+        x = LSTM(64)(x); x = BatchNormalization()(x); x = Dropout(0.2)(x)
         x = Dense(64, activation='relu')(x); x = BatchNormalization()(x); x = Dropout(0.3)(x)
         emb = Dense(32, activation='relu', name='embedding_layer')(x)
         x = BatchNormalization()(emb)
@@ -1250,7 +1238,7 @@ def build_bullish_neural_network(data):
                               tf.expand_dims(y_true,1)-y_pred, 0)
             return tf.reduce_mean(missed)
 
-        optimizer = Adam(learning_rate=5e-4, clipnorm=1.0, clipvalue=0.5)
+        optimizer = Adam(learning_rate=5e-4, clipnorm=2.0, clipvalue=1.0)
         model.compile(
             optimizer=optimizer,
             loss=custom_profit_loss,
@@ -1262,7 +1250,7 @@ def build_bullish_neural_network(data):
             pass
 
     # 12. Callbacks
-    early = EarlyStopping(monitor='val_loss', min_delta=1e-3, patience=15,
+    early = EarlyStopping(monitor='val_bull_profit_metric', mode='max', min_delta=1e-3, patience=15,
                           restore_best_weights=True, verbose=1)
     reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5,
                                  patience=5, min_lr=1e-6, verbose=1)
@@ -1273,7 +1261,7 @@ def build_bullish_neural_network(data):
     tb = TensorBoard(log_dir=f"logs/{time.time()}")
     f1cb = LambdaCallback(on_epoch_end=lambda e,l: logging.info(
         f"val_f1: {f1_score(y_val_seq, np.argmax(model.predict(X_val_seq),axis=1), average='weighted'):.4f}"))
-    warmup = WarmUpLearningRateScheduler(warmup_epochs=5, initial_lr=1e-4, target_lr=5e-4)
+    warmup = WarmUpLearningRateScheduler(warmup_epochs=5, initial_lr=0.0, target_lr=5e-4)
     classes = np.unique(y_train_seq)
     cw = compute_class_weight('balanced', classes=classes, y=y_train_seq)
     class_weights = {int(c): cw[i] for i,c in enumerate(classes)}
