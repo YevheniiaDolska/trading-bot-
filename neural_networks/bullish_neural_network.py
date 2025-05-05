@@ -51,6 +51,7 @@ from tensorflow.keras.callbacks import (
     TensorBoard,
     LambdaCallback
 )
+from sklearn.utils.class_weight import compute_class_weight
 
 
 # Создаем необходимые директории
@@ -64,7 +65,20 @@ required_dirs = [
 
 for directory in required_dirs:
     os.makedirs(directory, exist_ok=True)
-    
+
+class WarmUpLearningRateScheduler(tf.keras.callbacks.Callback):
+    def __init__(self, warmup_epochs=5, initial_lr=1e-4, target_lr=5e-4):
+        super().__init__()
+        self.warmup_epochs = warmup_epochs
+        self.initial_lr = initial_lr
+        self.target_lr = target_lr
+    def on_epoch_begin(self, epoch, logs=None):
+        if epoch < self.warmup_epochs:
+            lr = self.initial_lr + (self.target_lr - self.initial_lr) * (epoch / self.warmup_epochs)
+            tf.keras.backend.set_value(self.model.optimizer.lr, lr)
+            logging.info(f"Warmup epoch {epoch+1}/{self.warmup_epochs}: setting lr={lr:.6f}")
+
+
 
 # Универсальная функция для чанкования DataFrame
 def apply_in_chunks(df, func, chunk_size=100000):
@@ -301,6 +315,7 @@ def preprocess_market_data(data_dict):
     return data_dict
 
 # Кастомная функция потерь для бычьего рынка, ориентированная на прибыль
+'''
 def custom_profit_loss(y_true, y_pred):
     """
     Функция потерь, адаптированная для уменьшения количества сигналов HOLD и
@@ -374,6 +389,41 @@ def custom_profit_loss(y_true, y_pred):
     
     total_loss = tf.reduce_mean(base_loss + uncertainty_penalty + time_penalty) + transaction_cost
     return total_loss
+    '''
+
+def custom_profit_loss(y_true, y_pred):
+    """
+    Simplified and stabilized loss function for bullish market prediction
+    that prioritizes avoiding missed opportunities
+    """
+    # Convert to float32
+    y_true = tf.cast(y_true, dtype=tf.float32)
+    
+    # Get one-hot encoded target
+    y_true_one_hot = tf.one_hot(tf.cast(y_true, tf.int32), depth=3)
+    
+    # Add epsilon for numerical stability
+    epsilon = 1e-7
+    y_pred = tf.clip_by_value(y_pred, epsilon, 1 - epsilon)
+    
+    # Base categorical crossentropy loss
+    base_loss = -tf.reduce_sum(y_true_one_hot * tf.math.log(y_pred), axis=-1)
+    
+    # Class-specific weights - penalize missed buy signals (class 1) more
+    class_weights = tf.where(
+        tf.equal(y_true, 1), 
+        3.0,  # Higher weight for missed buy opportunities
+        tf.where(
+            tf.equal(y_true, 2),
+            2.0,  # Medium weight for missed sell opportunities
+            1.0   # Lower weight for missed hold
+        )
+    )
+    
+    # Apply weights to base loss
+    weighted_loss = base_loss * class_weights
+    
+    return tf.reduce_mean(weighted_loss)
 
 
 
@@ -1106,159 +1156,177 @@ def ensemble_predict(nn_model, xgb_model, feature_extractor, X_seq, weight_nn=0.
 
 # Обучение нейронной сети
 def build_bullish_neural_network(data):
-    # 0. Подготовка директорий
+    # 0. подготовка директорий
     os.makedirs("checkpoints", exist_ok=True)
 
-    # 1. Загрузка готовой модели, если есть
+    # 1. попытка загрузить готовую модель
     if os.path.exists("bullish_neural_network.h5"):
         try:
             model = tf.keras.models.load_model(
                 "bullish_neural_network.h5",
                 custom_objects={"custom_profit_loss": custom_profit_loss}
             )
-            logging.info("Загружена существующая модель, обучение пропущено.")
+            logging.info("Loaded existing model, skipping training.")
             return {"ensemble_model": {"nn_model": model}, "scaler": None}
         except Exception as e:
-            logging.error(f"Не удалось загрузить модель: {e}")
-            logging.info("Будем обучать заново.")
+            logging.error(f"Failed to load model: {e}")
+            logging.info("Re-training from scratch.")
     else:
-        logging.info("Модель не найдена, начинаем обучение.")
+        logging.info("No saved model found, starting training.")
 
-    logging.info("=== Начинаем build_bullish_neural_network ===")
+    logging.info("=== Starting build_bullish_neural_network ===")
 
     # 2. Подготовка данных
     features = [c for c in data.columns if c not in ("target","timestamp","symbol")]
     X_df = data[features].apply(pd.to_numeric, errors="coerce")
-    y = data["target"].values
+    y = data["target"].astype(int).values
     X_df = X_df.loc[:, ~X_df.isna().all()]
     imputer = SimpleImputer(strategy="median")
     X = imputer.fit_transform(X_df)
     check_feature_quality(X, y)
 
-    # 3. Балансировка + масштабирование
+    # 3. Балансировка и масштабирование
     X_bal, y_bal = balance_classes(X, y)
-    scaler = RobustScaler()
+    scaler = RobustScaler(quantile_range=(10, 90))
     X_scaled = scaler.fit_transform(X_bal)
 
     # 4. Train/Val split
     X_train, X_val, y_train, y_val = train_test_split(
-        X_scaled, y_bal, test_size=0.2, random_state=42
+        X_scaled, y_bal, test_size=0.2, random_state=42, stratify=y_bal
     )
+    # лог распределения классов
+    counts = np.bincount(y_train)
+    logging.info(f"Class distribution: {counts}")
 
-    # 5. Создание последовательностей
+    # 5. Создание временных последовательностей
     def create_sequences(X_arr, y_arr, timesteps=10):
         Xs, ys = [], []
         for i in range(len(X_arr) - timesteps):
             Xs.append(X_arr[i:i+timesteps])
             ys.append(y_arr[i+timesteps])
-        return np.array(Xs), np.array(ys)
+        return np.array(Xs, dtype=np.float32), np.array(ys, dtype=np.int32)
 
     timesteps = 10
-    weights = np.exp(np.linspace(-1, 0, timesteps))
+    time_weights = np.exp(np.linspace(-1, 0, timesteps))
     X_train_seq, y_train_seq = create_sequences(X_train, y_train, timesteps)
     X_val_seq,   y_val_seq   = create_sequences(X_val,   y_val,   timesteps)
-    X_train_seq *= weights.reshape(1, -1, 1)
-    X_val_seq   *= weights.reshape(1, -1, 1)
 
-    train_ds = (
-        tf.data.Dataset.from_tensor_slices((X_train_seq, y_train_seq))
-        .shuffle(1024).batch(32).prefetch(tf.data.AUTOTUNE)
-    )
-    val_ds = (
-        tf.data.Dataset.from_tensor_slices((X_val_seq, y_val_seq))
-        .batch(32).prefetch(tf.data.AUTOTUNE)
-    )
+    # добавить шум к тренировочным данным
+    def add_noise(x, noise_factor=0.05):
+        return x + np.random.normal(0, noise_factor, x.shape)
+    X_train_seq = add_noise(X_train_seq, noise_factor=0.05)
 
-    # 6. Стратегия распределённых вычислений
+    # применить временные веса
+    X_train_seq *= time_weights.reshape(1, -1, 1)
+    X_val_seq   *= time_weights.reshape(1, -1, 1)
+
+    # 6. Построение tf.data.Dataset
+    train_ds = (tf.data.Dataset.from_tensor_slices((X_train_seq, y_train_seq))
+                .shuffle(1024).batch(32).prefetch(tf.data.AUTOTUNE))
+    val_ds = (tf.data.Dataset.from_tensor_slices((X_val_seq, y_val_seq))
+              .batch(32).prefetch(tf.data.AUTOTUNE))
+
+    # 7. Strategy
     gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
+        for g in gpus:
+            tf.config.experimental.set_memory_growth(g, True)
         strategy = tf.distribute.MirroredStrategy()
     else:
         strategy = tf.distribute.get_strategy()
 
-    # 7. Построение и компиляция модели
+    # 8. Модель и компиляция
     with strategy.scope():
-        inputs = Input(shape=(timesteps, X_train_seq.shape[2]))
-        x = LSTM(256, return_sequences=True)(inputs)
+        inp = Input(shape=(timesteps, X_train_seq.shape[2]))
+        x = LSTM(128, return_sequences=True)(inp)
         x = BatchNormalization()(x)
-        x = Dropout(0.2)(x)
-        x = LSTM(128, return_sequences=True)(x)
-        x = BatchNormalization()(x)
-        x = Dropout(0.2)(x)
+        x = Dropout(0.4)(x)
         x = LSTM(64)(x)
         x = BatchNormalization()(x)
-        x = Dropout(0.2)(x)
-        x = Dense(128, activation='relu')(x)
+        x = Dropout(0.4)(x)
+        x = Dense(64, activation='relu')(x)
         x = BatchNormalization()(x)
-        x = Dropout(0.2)(x)
-        x = Dense(64, activation='relu', name='embedding_layer')(x)
-        x = BatchNormalization()(x)
-        outputs = Dense(3, activation='softmax')(x)
-        model = Model(inputs, outputs)
+        x = Dropout(0.3)(x)
+        emb = Dense(32, activation='relu', name='embedding_layer')(x)
+        x = BatchNormalization()(emb)
+        out = Dense(3, activation='softmax')(x)
+        model = Model(inp, out)
 
-        # Метрика упущенной прибыли
         def bull_profit_metric(y_true, y_pred):
-            missed = tf.where(y_true > y_pred, y_true - y_pred, 0)
+            missed = tf.where(y_pred < tf.expand_dims(y_true,1),
+                              tf.expand_dims(y_true,1) - y_pred, 0)
             return tf.reduce_mean(missed)
 
+        optimizer = Adam(
+            learning_rate=5e-4,
+            clipnorm=1.0,
+            clipvalue=0.5
+        )
         model.compile(
-            optimizer=Adam(learning_rate=1e-3),
+            optimizer=optimizer,
             loss=custom_profit_loss,
             metrics=[bull_profit_metric, CategoricalAccuracy(name='accuracy')]
         )
-
-        # Загрузка чекпоинтов
+        # загрузка чекпоинта
         try:
             model.load_weights(checkpoint_path_regular.format(epoch=0))
         except:
             pass
 
-    # 8. Коллбеки
+    # 9. Callbacks
     early_stopping = EarlyStopping(
         monitor='val_loss', min_delta=1e-3, patience=15,
         restore_best_weights=True, verbose=1
     )
     reduce_lr = ReduceLROnPlateau(
-        monitor='val_loss', factor=0.5, patience=3, min_lr=1e-6, verbose=1
+        monitor='val_loss', factor=0.5, patience=5,
+        min_lr=1e-6, verbose=1
     )
     ckpt_epoch = ModelCheckpoint(
-        filepath=checkpoint_path_regular,
-        save_weights_only=True, save_best_only=False, verbose=1
+        filepath=checkpoint_path_regular, save_weights_only=True,
+        save_best_only=False, verbose=1
     )
     ckpt_best = ModelCheckpoint(
-        filepath=checkpoint_path_best,
-        monitor='val_loss', save_weights_only=True, save_best_only=True, verbose=1
+        filepath=checkpoint_path_best, monitor='val_loss',
+        save_weights_only=True, save_best_only=True, verbose=1
     )
     tb_cb = TensorBoard(log_dir=f"logs/{time.time()}")
     f1_cb = LambdaCallback(on_epoch_end=lambda epoch, logs: logging.info(
-        f" — val_f1: {f1_score(y_val_seq, np.argmax(model.predict(X_val_seq),axis=1), average='weighted'):.4f}"
+        f"val_f1: {f1_score(y_val_seq, np.argmax(model.predict(X_val_seq),axis=1), average='weighted'):.4f}"
     ))
+    warmup_cb = WarmUpLearningRateScheduler(
+        warmup_epochs=5, initial_lr=1e-4, target_lr=5e-4
+    )
+    # compute class weights
+    classes = np.unique(y_train_seq)
+    cw = compute_class_weight('balanced', classes=classes, y=y_train_seq)
+    class_weights = {int(c): cw[i] for i, c in enumerate(classes)}
 
-    callbacks = [early_stopping, reduce_lr, ckpt_epoch, ckpt_best, tb_cb, f1_cb]
+    callbacks = [early_stopping, reduce_lr, ckpt_epoch,
+                 ckpt_best, tb_cb, f1_cb, warmup_cb]
 
-    # 9. Обучение
-    model.fit(
+    # 10. Training
+    history = model.fit(
         train_ds,
-        epochs=200,
+        epochs=100,
         validation_data=val_ds,
-        class_weight={0:1.0,1:3.0,2:2.5},
+        class_weight=class_weights,
         callbacks=callbacks,
+        shuffle=True,
         verbose=1
     )
 
-    # 10. Очистка старых чекпоинтов
-    for ckpt in glob.glob(f"checkpoints/{network_name}_checkpoint_epoch_*.h5"):
-        if ckpt != checkpoint_path_best:
-            os.remove(ckpt)
+    # 11. Cleanup checkpoints
+    for ck in glob.glob(f"checkpoints/{network_name}_checkpoint_epoch_*.h5"):
+        if ck != checkpoint_path_best:
+            os.remove(ck)
 
-    # 11. Сохранение модели
+    # 12. Save model
     os.makedirs("/workspace/saved_models", exist_ok=True)
     model.save("/workspace/saved_models/bullish_neural_network.h5")
     copy_output("Neural_Bullish", "/workspace/output/bullish_neural_network")
 
-    # 12. Ансамблирование
+    # 13. Ensemble
     try:
         feat_ext = Model(inputs=model.input,
                          outputs=model.get_layer('embedding_layer').output)
