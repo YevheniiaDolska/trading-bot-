@@ -1173,7 +1173,8 @@ def build_bullish_neural_network(data):
     )
     with strategy.scope():
         inp = Input(shape=(timesteps, X_train_seq.shape[2]))
-        x = LSTM(64, return_sequences=False)(inp)
+        x = LSTM(64,  name='lstm1', return_sequences=False)(inp)
+        x = BatchNormalization(name='bn_baseline')(x)
         out = Dense(3, activation="softmax")(x)
         baseline_model = Model(inp, out)
         baseline_model.compile(
@@ -1205,7 +1206,7 @@ def build_bullish_neural_network(data):
     base_ckpt = "/workspace/saved_models/bullish/baseline_bullish_weights.h5"
     baseline_callbacks = [
         EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True, verbose=1),
-        ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6, verbose=1),
+        ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=8, min_lr=1e-6, verbose=1),
         ModelCheckpoint(
             filepath="checkpoints/bullish/baseline_checkpoint_epoch_{epoch:02d}.h5",
             save_weights_only=True,
@@ -1279,14 +1280,14 @@ def build_bullish_neural_network(data):
         EarlyStopping(
             monitor="val_bull_profit_metric",
             mode="max",
-            patience=10,
+            patience=15,
             restore_best_weights=True,
             verbose=1
         ),
         ReduceLROnPlateau(
             monitor="val_loss",
             factor=0.5,
-            patience=5,
+            patience=8,
             min_lr=1e-6,
             verbose=1
         ),
