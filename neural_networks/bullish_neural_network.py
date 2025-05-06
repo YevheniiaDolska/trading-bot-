@@ -1076,14 +1076,18 @@ def build_bullish_neural_network(data):
     if os.path.exists(final_path):
         model = tf.keras.models.load_model(
             final_path,
-            custom_objects={"custom_profit_loss": custom_profit_loss, "bull_profit_metric": bull_profit_metric}
+            custom_objects={
+                "custom_profit_loss": custom_profit_loss,
+                "bull_profit_metric": bull_profit_metric
+            }
         )
         logging.info("Loaded existing final model, skipping training.")
         return {"ensemble_model": {"nn_model": model}, "scaler": None}
-    
+
     # --- Подготовка директорий ---
     os.makedirs("checkpoints/bullish", exist_ok=True)
     os.makedirs("/workspace/saved_models/bullish", exist_ok=True)
+
     """
     Двухэтапное обучение нейросети для бычьего рынка:
       1) Train простой baseline LSTM-модели с CrossEntropy
@@ -1092,27 +1096,39 @@ def build_bullish_neural_network(data):
     Возвращает словарь с nn_model, xgb_model, feature_extractor и scaler.
     """
     finetune_callbacks = [
-        EarlyStopping(monitor="val_bull_profit_metric", mode="max", patience=10, restore_best_weights=True, verbose=1),
-        ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=1),
-        # сохранить каждый epoch fine-tune
-        ModelCheckpoint(
-            filepath="checkpoints/bullish/bullish_checkpoint_epoch_{epoch:02d}.h5",
-            save_weights_only=True, save_best_only=False, verbose=1
+        EarlyStopping(
+            monitor="val_bull_profit_metric",
+            mode="max",
+            patience=10,
+            restore_best_weights=True,
+            verbose=1
+        ),
+        ReduceLROnPlateau(
+            monitor="val_loss",
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6,
+            verbose=1
         ),
         ModelCheckpoint(
-            filepath=fine_ckpt, save_weights_only=True, save_best_only=True, monitor="val_bull_profit_metric", verbose=1
+            filepath="checkpoints/bullish/bullish_checkpoint_epoch_{epoch:02d}.h5",
+            save_weights_only=True,
+            save_best_only=False,
+            verbose=1
+        ),
+        ModelCheckpoint(
+            filepath=fine_ckpt,
+            save_weights_only=True,
+            save_best_only=True,
+            monitor="val_bull_profit_metric",
+            verbose=1
         ),
         TensorBoard(log_dir=f"logs/finetune/{int(time.time())}")
     ]
-    
-    # сохранять каждый шаг fine-tune
-    ModelCheckpoint(filepath="checkpoints/bullish/bullish_checkpoint_epoch_{epoch:02d}.h5", save_weights_only=True, save_best_only=False, verbose=1),
-    os.makedirs("checkpoints/bullish", exist_ok=True)
-    os.makedirs("/workspace/saved_models/bullish", exist_ok=True)
 
     # --- 1. Подготовка данных и feature engineering должен быть выполнен до вызова ---
     # Предполагаем, что data уже содержит features и колонки ['target','timestamp','symbol']
-    features = [c for c in data.columns if c not in ("target","timestamp","symbol")]
+    features = [c for c in data.columns if c not in ("target", "timestamp", "symbol")]
     X_raw = data[features].apply(pd.to_numeric, errors="coerce")
     y_raw = data["target"].astype(int).values
     # Удаляем столбцы полностью NaN
@@ -1126,21 +1142,21 @@ def build_bullish_neural_network(data):
     X_train, X_val, y_train, y_val = train_test_split(
         X, y_raw, test_size=0.2, random_state=42, stratify=y_raw
     )
-    scaler = RobustScaler(quantile_range=(10,90))
+    scaler = RobustScaler(quantile_range=(10, 90))
     X_train = scaler.fit_transform(X_train)
-    X_val   = scaler.transform(X_val)
+    X_val = scaler.transform(X_val)
 
     # 3. Создание временных последовательностей
     def create_sequences(X_arr, y_arr, timesteps=10):
         Xs, ys = [], []
         for i in range(len(X_arr) - timesteps):
-            Xs.append(X_arr[i:i+timesteps])
-            ys.append(y_arr[i+timesteps])
+            Xs.append(X_arr[i : i + timesteps])
+            ys.append(y_arr[i + timesteps])
         return np.array(Xs, dtype=np.float32), np.array(ys, dtype=np.int32)
 
     timesteps = 10
     X_train_seq, y_train_seq = create_sequences(X_train, y_train, timesteps)
-    X_val_seq,   y_val_seq   = create_sequences(X_val,   y_val,   timesteps)
+    X_val_seq, y_val_seq = create_sequences(X_val, y_val, timesteps)
 
     # --- 4. Baseline training (CrossEntropy) ---
     strategy = (
@@ -1158,107 +1174,128 @@ def build_bullish_neural_network(data):
             loss="sparse_categorical_crossentropy",
             metrics=[CategoricalAccuracy(name="baseline_acc")]
         )
+
     # --- Загрузка последнего baseline чекпоинта, если есть ---
-    base_checks = sorted(glob.glob("checkpoints/bullish/baseline_checkpoint_epoch_*.h5"))
+    base_checks = sorted(
+        glob.glob("checkpoints/bullish/baseline_checkpoint_epoch_*.h5")
+    )
     if base_checks:
         baseline_model.load_weights(base_checks[-1])
-        logging.info(f"Loaded last baseline checkpoint: {base_checks[-1]}"),
-        loss="sparse_categorical_crossentropy",
-        metrics=[CategoricalAccuracy(name="baseline_acc")]
-        )
+        logging.info(f"Loaded last baseline checkpoint: {base_checks[-1]}")
 
     train_ds = (
         tf.data.Dataset.from_tensor_slices((X_train_seq, y_train_seq))
-        .shuffle(2048).batch(64).prefetch(tf.data.AUTOTUNE)
+        .shuffle(2048)
+        .batch(64)
+        .prefetch(tf.data.AUTOTUNE)
     )
     val_ds = (
         tf.data.Dataset.from_tensor_slices((X_val_seq, y_val_seq))
-        .batch(64).prefetch(tf.data.AUTOTUNE)
+        .batch(64)
+        .prefetch(tf.data.AUTOTUNE)
     )
 
     base_ckpt = "/workspace/saved_models/bullish/baseline_bullish_weights.h5"
     baseline_callbacks = [
         EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True, verbose=1),
         ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6, verbose=1),
-        # сохранить каждый epoch baseline
         ModelCheckpoint(
             filepath="checkpoints/bullish/baseline_checkpoint_epoch_{epoch:02d}.h5",
-            save_weights_only=True, save_best_only=False, verbose=1
+            save_weights_only=True,
+            save_best_only=False,
+            verbose=1
         ),
         ModelCheckpoint(
-            filepath=base_ckpt, save_weights_only=True, save_best_only=True, monitor="val_loss", verbose=1
+            filepath=base_ckpt,
+            save_weights_only=True,
+            save_best_only=True,
+            monitor="val_loss",
+            verbose=1
         ),
-        TensorBoard(log_dir=f"logs/baseline/{int(time.time())}")
-    ]
-        EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True, verbose=1),
-        ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6, verbose=1),
-        ModelCheckpoint(filepath=base_ckpt, save_weights_only=True, save_best_only=True, monitor="val_loss", verbose=1),
         TensorBoard(log_dir=f"logs/baseline/{int(time.time())}")
     ]
     baseline_model.fit(
-        train_ds, validation_data=val_ds,
-        epochs=200, callbacks=baseline_callbacks, verbose=1
+        train_ds,
+        validation_data=val_ds,
+        epochs=200,
+        callbacks=baseline_callbacks,
+        verbose=1
     )
     baseline_model.save_weights(base_ckpt)
 
     # --- 5. Fine-tune: расширенная архитектура с custom_profit_loss и bull_profit_metric ---
-    # Воссоздаём полную трёхслойную LSTM-модель поверх baseline весов первого LSTM-слоя
     with strategy.scope():
         inp = Input(shape=(timesteps, X_train_seq.shape[2]))
-        # Первый LSTM слой — загружаем обученные baseline- веса
-        x = LSTM(64, return_sequences=True, name='lstm1')(inp)
-        x = BatchNormalization(name='bn1')(x)
-        x = Dropout(0.3, name='drop1')(x)
-        # Дополнительные LSTM-слои
-        x = LSTM(128, return_sequences=True, name='lstm2')(x)
-        x = BatchNormalization(name='bn2')(x)
-        x = Dropout(0.3, name='drop2')(x)
-        x = LSTM(64, return_sequences=False, name='lstm3')(x)
-        x = BatchNormalization(name='bn3')(x)
-        x = Dropout(0.3, name='drop3')(x)
-        # Полносвязные слои + эмбеддинг
-        x = Dense(128, activation='relu', name='dense1')(x)
-        x = BatchNormalization(name='bn4')(x)
-        x = Dropout(0.3, name='drop4')(x)
-        emb = Dense(64, activation='relu', name='embedding_layer')(x)
-        x = BatchNormalization(name='bn5')(emb)
-        outputs = Dense(3, activation='softmax', name='output')(x)
+        x = LSTM(64, return_sequences=True, name="lstm1")(inp)
+        x = BatchNormalization(name="bn1")(x)
+        x = Dropout(0.3, name="drop1")(x)
+        x = LSTM(128, return_sequences=True, name="lstm2")(x)
+        x = BatchNormalization(name="bn2")(x)
+        x = Dropout(0.3, name="drop2")(x)
+        x = LSTM(64, return_sequences=False, name="lstm3")(x)
+        x = BatchNormalization(name="bn3")(x)
+        x = Dropout(0.3, name="drop3")(x)
+        x = Dense(128, activation="relu", name="dense1")(x)
+        x = BatchNormalization(name="bn4")(x)
+        x = Dropout(0.3, name="drop4")(x)
+        emb = Dense(64, activation="relu", name="embedding_layer")(x)
+        x = BatchNormalization(name="bn5")(emb)
+        outputs = Dense(3, activation="softmax", name="output")(x)
         fine_model = Model(inp, outputs)
-        # Загружаем baseline- веса первого LSTM слоя по имени
-        fine_model.get_layer('lstm1').set_weights(
-            baseline_model.get_layer('lstm1').get_weights()
+        fine_model.get_layer("lstm1").set_weights(
+            baseline_model.get_layer("lstm1").get_weights()
         )
-        # Определяем метрику упущенной прибыли
+
         def bull_profit_metric(y_true, y_pred):
             true_one_hot = tf.one_hot(tf.cast(y_true, tf.int32), depth=3)
             diff = true_one_hot - y_pred
-            missed = tf.where(diff>0, diff, 0.0)
+            missed = tf.where(diff > 0, diff, 0.0)
             return tf.reduce_mean(missed)
-        # Компиляция fine_model
+
         fine_model.compile(
             optimizer=Adam(learning_rate=5e-4, clipnorm=1.0),
             loss=custom_profit_loss,
-            metrics=[bull_profit_metric, CategoricalAccuracy(name='acc')]
+            metrics=[bull_profit_metric, CategoricalAccuracy(name="acc")]
         )
 
-    # Callbacks для fine-tune
     fine_ckpt = "checkpoints/bullish/bullish_best_model.h5"
-    class_weights = dict(zip(
-        *compute_class_weight(
-            class_weight="balanced",
-            classes=np.unique(y_train_seq),
-            y=y_train_seq
-        ).tolist(),
-        np.unique(y_train_seq)
-    ))
+    class_weights = dict(
+        zip(
+            *compute_class_weight(
+                class_weight="balanced",
+                classes=np.unique(y_train_seq),
+                y=y_train_seq
+            ).tolist(),
+            np.unique(y_train_seq)
+        )
+    )
     finetune_callbacks = [
-        EarlyStopping(monitor="val_bull_profit_metric", mode="max", patience=10, restore_best_weights=True, verbose=1),
-        ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=1),
-        ModelCheckpoint(filepath=fine_ckpt, save_weights_only=True, save_best_only=True, monitor="val_bull_profit_metric", verbose=1),
+        EarlyStopping(
+            monitor="val_bull_profit_metric",
+            mode="max",
+            patience=10,
+            restore_best_weights=True,
+            verbose=1
+        ),
+        ReduceLROnPlateau(
+            monitor="val_loss",
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6,
+            verbose=1
+        ),
+        ModelCheckpoint(
+            filepath=fine_ckpt,
+            save_weights_only=True,
+            save_best_only=True,
+            monitor="val_bull_profit_metric",
+            verbose=1
+        ),
         TensorBoard(log_dir=f"logs/finetune/{int(time.time())}")
     ]
     fine_model.fit(
-        train_ds, validation_data=val_ds,
+        train_ds,
+        validation_data=val_ds,
         epochs=200,
         class_weight=class_weights,
         callbacks=finetune_callbacks,
@@ -1267,21 +1304,33 @@ def build_bullish_neural_network(data):
     fine_model.save("/workspace/saved_models/bullish_neural_network.h5")
 
     # --- 6. Ансамблирование с XGBoost ---
-    feat_ext = Model(inputs=fine_model.input, outputs=fine_model.get_layer("embedding_layer").output)
+    feat_ext = Model(
+        inputs=fine_model.input,
+        outputs=fine_model.get_layer("embedding_layer").output
+    )
     emb_train = feat_ext.predict(X_train_seq)
-    emb_val   = feat_ext.predict(X_val_seq)
+    emb_val = feat_ext.predict(X_val_seq)
     xgb_model = XGBClassifier(objective="multi:softprob", random_state=42)
     xgb_model.fit(emb_train, y_train_seq)
     nn_p = fine_model.predict(X_val_seq)
     xgb_p = xgb_model.predict_proba(emb_val)
-    full = np.zeros((xgb_p.shape[0],3))
-    for i,cls in enumerate(xgb_model.classes_): full[:,cls] = xgb_p[:,i]
-    ens = np.argmax(0.5*nn_p + 0.5*full, axis=1)
-    logging.info(f"Ensemble F1: {f1_score(y_val_seq, ens, average='weighted'):.4f}")
+    full = np.zeros((xgb_p.shape[0], 3))
+    for i, cls in enumerate(xgb_model.classes_):
+        full[:, cls] = xgb_p[:, i]
+    ens = np.argmax(0.5 * nn_p + 0.5 * full, axis=1)
+    logging.info(
+        f"Ensemble F1: {f1_score(y_val_seq, ens, average='weighted'):.4f}"
+    )
     joblib.dump(xgb_model, "/workspace/saved_models/xgb_model_bullish.pkl")
 
     return {
-        "ensemble_model": {"nn_model": fine_model, "xgb_model": xgb_model, "feature_extractor": feat_ext, "ensemble_weight_nn": 0.5, "ensemble_weight_xgb": 0.5},
+        "ensemble_model": {
+            "nn_model": fine_model,
+            "xgb_model": xgb_model,
+            "feature_extractor": feat_ext,
+            "ensemble_weight_nn": 0.5,
+            "ensemble_weight_xgb": 0.5
+        },
         "scaler": scaler
     }
 
