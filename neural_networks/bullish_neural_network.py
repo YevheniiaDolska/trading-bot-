@@ -1310,14 +1310,23 @@ def build_bullish_neural_network(data):
     )
     emb_train = feat_ext.predict(X_train_seq)
     emb_val = feat_ext.predict(X_val_seq)
-    xgb_model = XGBClassifier(objective="multi:softprob", random_state=42)
+    xgb_model = XGBClassifier(objective="multi:softprob", num_class=3, random_state=42)
     xgb_model.fit(emb_train, y_train_seq)
-    nn_p = fine_model.predict(X_val_seq)
-    xgb_p = xgb_model.predict_proba(emb_val)
-    full = np.zeros((xgb_p.shape[0], 3))
-    for i, cls in enumerate(xgb_model.classes_):
-        full[:, cls] = xgb_p[:, i]
-    ens = np.argmax(0.5 * nn_p + 0.5 * full, axis=1)
+    # 1) Получаем сырые вероятности от XGBoost (может быть (N,1), (N,2) или (N,3))
+    raw_xgb_p = xgb_model.predict_proba(embeddings_val)
+
+    # 2) Создаём гарантированный full-массив размера (N,3)
+    n = raw_xgb_p.shape[0]
+    full_xgb_p = np.zeros((n, 3), dtype=raw_xgb_p.dtype)
+
+    # 3) Заполняем только те столбцы, которые видел XGBoost
+    for idx, cls in enumerate(xgb_model.classes_):
+        full_xgb_p[:, int(cls)] = raw_xgb_p[:, idx]
+
+    # 4) Энсамблируем с neural-сеткой
+    nn_p      = fine_model.predict(X_val_seq_weighted)
+    ens_logits = 0.5 * nn_p + 0.5 * full_xgb_p
+    ens        = np.argmax(ens_logits, axis=1)
     logging.info(
         f"Ensemble F1: {f1_score(y_val_seq, ens, average='weighted'):.4f}"
     )
