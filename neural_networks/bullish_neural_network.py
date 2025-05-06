@@ -1104,8 +1104,9 @@ def build_bullish_neural_network(data):
         ),
         TensorBoard(log_dir=f"logs/finetune/{int(time.time())}")
     ]
-        # сохранять каждый шаг fine-tune
-        ModelCheckpoint(filepath="checkpoints/bullish/bullish_checkpoint_epoch_{epoch:02d}.h5", save_weights_only=True, save_best_only=False, verbose=1),
+    
+    # сохранять каждый шаг fine-tune
+    ModelCheckpoint(filepath="checkpoints/bullish/bullish_checkpoint_epoch_{epoch:02d}.h5", save_weights_only=True, save_best_only=False, verbose=1),
     os.makedirs("checkpoints/bullish", exist_ok=True)
     os.makedirs("/workspace/saved_models/bullish", exist_ok=True)
 
