@@ -44,6 +44,9 @@ from filterpy.kalman import KalmanFilter
 from utils_output import ensure_directory, copy_output, save_model_output
 from sklearn.impute import SimpleImputer
 from numpy.random import RandomState
+from tensorflow.keras.metrics import CategoricalAccuracy
+from sklearn.utils.class_weight import compute_class_weight
+
 
 
 # Создаем необходимые директории
