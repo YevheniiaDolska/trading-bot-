@@ -1087,6 +1087,8 @@ def build_bullish_neural_network(data):
     # --- Подготовка директорий ---
     os.makedirs("checkpoints/bullish", exist_ok=True)
     os.makedirs("/workspace/saved_models/bullish", exist_ok=True)
+    
+    fine_ckpt = "checkpoints/bullish/bullish_best_model.h5"
 
     """
     Двухэтапное обучение нейросети для бычьего рынка:
@@ -1258,7 +1260,6 @@ def build_bullish_neural_network(data):
             metrics=[bull_profit_metric, CategoricalAccuracy(name="acc")]
         )
 
-    fine_ckpt = "checkpoints/bullish/bullish_best_model.h5"
     class_weights = dict(
         zip(
             *compute_class_weight(
