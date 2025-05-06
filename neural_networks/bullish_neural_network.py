@@ -1163,8 +1163,8 @@ def build_bullish_neural_network(data):
     if base_checks:
         baseline_model.load_weights(base_checks[-1])
         logging.info(f"Loaded last baseline checkpoint: {base_checks[-1]}"),
-            loss="sparse_categorical_crossentropy",
-            metrics=[CategoricalAccuracy(name="baseline_acc")]
+        loss="sparse_categorical_crossentropy",
+        metrics=[CategoricalAccuracy(name="baseline_acc")]
         )
 
     train_ds = (
