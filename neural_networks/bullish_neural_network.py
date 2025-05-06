@@ -43,6 +43,7 @@ from xgboost import XGBClassifier
 from filterpy.kalman import KalmanFilter
 from utils_output import ensure_directory, copy_output, save_model_output
 from sklearn.impute import SimpleImputer
+from numpy.random import RandomState
 
 
 # Создаем необходимые директории
@@ -1027,10 +1028,11 @@ def balance_classes(X, y):
     logging.info(f"Уникальные классы в y: {np.unique(y, return_counts=True)}")
     
     max_for_smote = 300_000
+    rng = RandomState(42)
     if len(X) > max_for_smote:
-        # Возьмём случайную подвыборку строк, чтобы SMOTE не вис на 10+ млн
-        X_sample = X.sample(n=max_for_smote, random_state=42)
-        y_sample = y.loc[X_sample.index]  # y должен быть Series с тем же индексом
+        idx = rng.choice(len(X), size=max_for_smote, replace=False)
+        X_sample = X[idx]
+        y_sample = y[idx]
     else:
         X_sample = X
         y_sample = y
