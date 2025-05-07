@@ -1175,12 +1175,14 @@ def build_bullish_neural_network(data):
         inp = Input(shape=(timesteps, X_train_seq.shape[2]))
         x = LSTM(64,  name='lstm1', return_sequences=False)(inp)
         x = BatchNormalization(name='bn_baseline')(x)
+        x = Dense(32, activation="relu")(x)
+        x = BatchNormalization()(x)
         out = Dense(3, activation="softmax")(x)
         baseline_model = Model(inp, out)
         baseline_model.compile(
-            optimizer=Adam(learning_rate=2e-3),
+            optimizer=Adam(learning_rate=3e-3),
             loss="sparse_categorical_crossentropy",
-            metrics=[CategoricalAccuracy(name="baseline_acc")]
+            metrics=[tf.keras.metrics.SparseCategoricalAccuracy(name="baseline_acc")]
         )
 
     # --- Загрузка последнего baseline чекпоинта, если есть ---
@@ -1205,7 +1207,7 @@ def build_bullish_neural_network(data):
 
     base_ckpt = "/workspace/saved_models/bullish/baseline_bullish_weights.h5"
     baseline_callbacks = [
-        EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True, verbose=1),
+        EarlyStopping(monitor="val_loss", patience=25, restore_best_weights=True, verbose=1),
         ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=8, min_lr=1e-6, verbose=1),
         ModelCheckpoint(
             filepath="checkpoints/bullish/baseline_checkpoint_epoch_{epoch:02d}.h5",
@@ -1320,7 +1322,7 @@ def build_bullish_neural_network(data):
     xgb_model = XGBClassifier(objective="multi:softprob", num_class=3, random_state=42)
     xgb_model.fit(emb_train, y_train_seq)
     # 1) Получаем сырые вероятности от XGBoost (может быть (N,1), (N,2) или (N,3))
-    raw_xgb_p = xgb_model.predict_proba(embeddings_val)
+    raw_xgb_p = xgb_model.predict_proba(emb_val)
 
     # 2) Создаём гарантированный full-массив размера (N,3)
     n = raw_xgb_p.shape[0]
