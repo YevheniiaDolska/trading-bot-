@@ -1173,7 +1173,7 @@ def build_bullish_neural_network(data):
     )
     with strategy.scope():
         inp = Input(shape=(timesteps, X_train_seq.shape[2]))
-        x = LSTM(32,  name='lstm1', return_sequences=False)(inp)
+        x = LSTM(64,  name='lstm1', return_sequences=False)(inp)
         x = BatchNormalization(name='bn_baseline')(x)
         out = Dense(3, activation="softmax")(x)
         baseline_model = Model(inp, out)
