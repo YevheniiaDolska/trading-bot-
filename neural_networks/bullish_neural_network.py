@@ -1266,16 +1266,16 @@ def build_bullish_neural_network(data):
             metrics=[bull_profit_metric, CategoricalAccuracy(name="acc")]
         )
 
-    class_weights = dict(
-        zip(
-            *compute_class_weight(
-                class_weight="balanced",
-                classes=np.unique(y_train_seq),
-                y=y_train_seq
-            ).tolist(),
-            np.unique(y_train_seq)
-        )
+    # 1) вычисляем веса
+    classes = np.unique(y_train_seq)
+    weights = compute_class_weight(
+        class_weight="balanced",
+        classes=classes,
+        y=y_train_seq
     )
+    # 2) собираем словарь {класс: вес}
+    class_weights = { int(cls): float(w) for cls, w in zip(classes, weights) }
+    
     finetune_callbacks = [
         EarlyStopping(
             monitor="val_bull_profit_metric",
