@@ -1173,12 +1173,12 @@ def build_bullish_neural_network(data):
     )
     with strategy.scope():
         inp = Input(shape=(timesteps, X_train_seq.shape[2]))
-        x = LSTM(64,  name='lstm1', return_sequences=False)(inp)
+        x = LSTM(32,  name='lstm1', return_sequences=False)(inp)
         x = BatchNormalization(name='bn_baseline')(x)
         out = Dense(3, activation="softmax")(x)
         baseline_model = Model(inp, out)
         baseline_model.compile(
-            optimizer=Adam(learning_rate=1e-3),
+            optimizer=Adam(learning_rate=2e-3),
             loss="sparse_categorical_crossentropy",
             metrics=[CategoricalAccuracy(name="baseline_acc")]
         )
@@ -1194,12 +1194,12 @@ def build_bullish_neural_network(data):
     train_ds = (
         tf.data.Dataset.from_tensor_slices((X_train_seq, y_train_seq))
         .shuffle(2048)
-        .batch(64)
+        .batch(128)
         .prefetch(tf.data.AUTOTUNE)
     )
     val_ds = (
         tf.data.Dataset.from_tensor_slices((X_val_seq, y_val_seq))
-        .batch(64)
+        .batch(128)
         .prefetch(tf.data.AUTOTUNE)
     )
 
@@ -1261,7 +1261,7 @@ def build_bullish_neural_network(data):
             return tf.reduce_mean(missed)
 
         fine_model.compile(
-            optimizer=Adam(learning_rate=5e-4, clipnorm=1.0),
+            optimizer=Adam(learning_rate=5e-4),
             loss=custom_profit_loss,
             metrics=[bull_profit_metric, CategoricalAccuracy(name="acc")]
         )
