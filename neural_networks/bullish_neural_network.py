@@ -1026,28 +1026,38 @@ def load_last_saved_model(model_filename):
 
 
 def balance_classes(X, y):
-    logging.info("Начало балансировки классов")
-    logging.info(f"Размеры данных до балансировки: X={X.shape}, y={y.shape}")
-    logging.info(f"Уникальные классы в y: {np.unique(y, return_counts=True)}")
-    
+    """
+    Балансировка классами через SMOTETomek, с гарантией,
+    что в выборке до SMOTE есть все три класса 0,1,2.
+    """
+    # максимально разрешенный объём для SMOTE
     max_for_smote = 300_000
-    rng = RandomState(42)
-    if len(X) > max_for_smote:
-        idx = rng.choice(len(X), size=max_for_smote, replace=False)
+
+    # если данных слишком много — делаем подвыборку, иначе используем всё
+    if len(y) > max_for_smote:
+        # здесь можно stratified sampling, но для простоты возьмём случайно:
+        idx = np.random.RandomState(42).permutation(len(y))[:max_for_smote]
         X_sample = X[idx]
         y_sample = y[idx]
     else:
-        X_sample = X
-        y_sample = y
+        X_sample, y_sample = X, y
 
-    if X.shape[0] == 0 or y.shape[0] == 0:
-        raise ValueError("Данные для балансировки пусты. Проверьте исходные данные и фильтры.")
+    # гарантируем, что в y_sample есть все три класса
+    for cls in (0, 1, 2):
+        if cls not in y_sample:
+            # найдём хотя бы один пример этого класса в полном y
+            full_idx = np.where(y == cls)[0]
+            if full_idx.size > 0:
+                i = np.random.choice(full_idx)
+                X_sample = np.vstack([X_sample, X[i : i+1]])
+                y_sample = np.concatenate([y_sample, [cls]])
+            # если же в полной выборке вообще нет этого класса —
+            # значит данные изначально одного типа, тут уж ничем помочь нельзя
 
-    smote_tomek = SMOTETomek(random_state=42)
-    X_resampled, y_resampled = smote_tomek.fit_resample(X_sample, y_sample)
-
-    logging.info(f"Размеры данных после балансировки: X={X_resampled.shape}, y={y_resampled.shape}")
-    return X_resampled, y_resampled
+    # применяем SMOTETomek
+    smt = SMOTETomek(random_state=42)
+    X_res, y_res = smt.fit_resample(X_sample, y_sample.astype(int))
+    return X_res, y_res
 
 
 
