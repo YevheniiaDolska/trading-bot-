@@ -1343,7 +1343,7 @@ def build_bullish_neural_network(data):
         full_xgb_p[:, int(cls)] = raw_xgb_p[:, idx]
 
     # 4) Энсамблируем с neural-сеткой
-    nn_p      = fine_model.predict(X_val_seq_weighted)
+    nn_p      = fine_model.predict(X_val_seq)
     ens_logits = 0.5 * nn_p + 0.5 * full_xgb_p
     ens        = np.argmax(ens_logits, axis=1)
     logging.info(
