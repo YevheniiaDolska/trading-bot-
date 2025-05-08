@@ -60,7 +60,7 @@ required_dirs = [
 
 for directory in required_dirs:
     os.makedirs(directory, exist_ok=True)
-    
+
 
 # Универсальная функция для чанкования DataFrame
 def apply_in_chunks(df, func, chunk_size=100000):
@@ -190,7 +190,6 @@ def train_xgboost_on_embeddings(X_emb, y):
     xgb_model.fit(X_emb, y)
     logging.info("XGBoost обучен.")
     return xgb_model
-
 
         
 def calculate_cross_coin_features(data_dict):
@@ -1104,6 +1103,12 @@ def build_bullish_neural_network(data):
     os.makedirs("/workspace/saved_models/bullish", exist_ok=True)
     
     fine_ckpt = "checkpoints/bullish/bullish_best_model.h5"
+    
+    def bull_profit_metric(y_true, y_pred):
+            true_one_hot = tf.one_hot(tf.cast(y_true, tf.int32), depth=3)
+            diff = true_one_hot - y_pred
+            missed = tf.where(diff > 0, diff, 0.0)
+            return tf.reduce_mean(missed)
 
     """
     Двухэтапное обучение нейросети для бычьего рынка:
@@ -1266,11 +1271,6 @@ def build_bullish_neural_network(data):
             baseline_model.get_layer("lstm1").get_weights()
         )
 
-        def bull_profit_metric(y_true, y_pred):
-            true_one_hot = tf.one_hot(tf.cast(y_true, tf.int32), depth=3)
-            diff = true_one_hot - y_pred
-            missed = tf.where(diff > 0, diff, 0.0)
-            return tf.reduce_mean(missed)
 
         fine_model.compile(
             optimizer=Adam(learning_rate=5e-4),
