@@ -46,6 +46,8 @@ from sklearn.impute import SimpleImputer
 from numpy.random import RandomState
 from tensorflow.keras.metrics import CategoricalAccuracy
 from sklearn.utils.class_weight import compute_class_weight
+from collections import Counter
+from sklearn.metrics import f1_score
 
 
 
@@ -298,24 +300,13 @@ def preprocess_market_data(data_dict):
 # Кастомная функция потерь для бычьего рынка, ориентированная на прибыль
 def custom_profit_loss(y_true, y_pred):
     """
-    Функция потерь, адаптированная для уменьшения количества сигналов HOLD и
-    стимулирования модели выдавать больше явных сигналов BUY/SELL на бычьем рынке.
-    
-    Предположения:
-      - y_true: тензор истинных меток, где 0 = HOLD, 1 = BUY, 2 = SELL.
-      - y_pred: тензор предсказаний (непрерывный) в диапазоне [0, 1]:
-            < 0.2  => SELL,
-         > 0.7  => BUY,
-         между 0.2 и 0.7 => HOLD.
+    Custom loss для HFT: штраф за flip-flop и комиссию + вся твоя логика.
     """
     y_true = tf.cast(y_true, dtype=tf.float32)
     y_pred = tf.cast(y_pred, dtype=tf.float32)
     diff = y_pred - y_true
     log_factor = tf.math.log1p(tf.abs(diff) + 1e-7)
-    
-    # Для истинного класса HOLD (0):
-    # Если y_pred попадает в интервал HOLD (0.2 - 0.7), штраф увеличивается (2.0×),
-    # а если предсказано экстремальное значение, штраф уменьшается (0.5×).
+
     loss_hold = tf.where(
         y_pred > 0.7,
         0.5 * tf.abs(diff) * log_factor,
@@ -325,22 +316,17 @@ def custom_profit_loss(y_true, y_pred):
             2.0 * tf.abs(diff) * log_factor
         )
     )
-    
-    # Для истинного класса BUY (1): если y_pred не превышает 0.7, применяем повышенный штраф (3.0×)
     loss_buy = tf.where(
         y_pred <= 0.7,
         3.0 * tf.abs(diff) * log_factor,
         tf.abs(diff) * log_factor
     )
-    
-    # Для истинного класса SELL (2): если y_pred не ниже 0.2, применяем повышенный штраф (3.0×)
     loss_sell = tf.where(
         y_pred >= 0.2,
         3.0 * tf.abs(diff) * log_factor,
         tf.abs(diff) * log_factor
     )
-    
-    # Объединяем случаи по значению y_true (0: HOLD, 1: BUY, 2: SELL)
+
     base_loss = tf.where(
         tf.equal(y_true, 0.0),
         loss_hold,
@@ -350,26 +336,33 @@ def custom_profit_loss(y_true, y_pred):
             loss_sell
         )
     )
-    
-    # Штраф за неуверенные предсказания: если y_pred находится в промежутке [0.3, 0.7], добавляем дополнительный штраф (коэффициент 1.0)
+
     uncertainty_penalty = tf.where(
         tf.logical_and(y_pred > 0.3, y_pred < 0.7),
         1.0 * tf.abs(diff) * log_factor,
         0.0
     )
-    
-    # Штраф за задержку реакции: небольшое увеличение штрафа с ростом номера примера
     time_penalty = 0.1 * tf.abs(diff) * (
-    tf.expand_dims(tf.cast(tf.range(tf.shape(diff)[0]), tf.float32), axis=1) / tf.cast(tf.shape(diff)[0], tf.float32)
-        )
-
-    
-    # Штраф за транзакционные издержки: учитываем резкие изменения предсказаний между соседними точками
-    transaction_cost = 0.001 * tf.reduce_sum(tf.abs(y_pred[1:] - y_pred[:-1]))
-    
-    total_loss = tf.reduce_mean(base_loss + uncertainty_penalty + time_penalty) + transaction_cost
+        tf.expand_dims(tf.cast(tf.range(tf.shape(diff)[0]), tf.float32), axis=1) / tf.cast(tf.shape(diff)[0], tf.float32)
+    )
+    # Новый блок — Flip-Flop и комиссия
+    action = tf.round(y_pred)  # округление к ближайшему действию (0, 1, 2)
+    action_change = tf.abs(action[1:] - action[:-1])
+    flip_flop_penalty = 0.002 * tf.reduce_sum(action_change)
+    transaction_cost = 0.001 * tf.reduce_sum(action_change)
+    total_loss = tf.reduce_mean(base_loss + uncertainty_penalty + time_penalty) + transaction_cost + flip_flop_penalty
     return total_loss
 
+
+class F1Callback(tf.keras.callbacks.Callback):
+    def __init__(self, val_data):
+        super().__init__()
+        self.val_data = val_data
+    def on_epoch_end(self, epoch, logs=None):
+        X_val, y_val = self.val_data
+        y_pred = np.argmax(self.model.predict(X_val), axis=1)
+        f1 = f1_score(y_val, y_pred, average='weighted')
+        print(f"F1-score (weighted): {f1:.4f}")
 
 
 # Attention Layer
@@ -806,134 +799,137 @@ def convert_df_dtypes(df):
 
 
 # Извлечение признаков
-def extract_features(data):
+def extract_features(data, multi_horizon=[1,2,3], profit_thresholds=[0.00005, 0.0001, 0.0002], label_smoothing=0.05):
     """
-    Извлечение признаков для каждого символа отдельно.
+    Извлечение признаков для каждого символа отдельно. Полная версия!
+    - multi_horizon: список шагов вперед для multi-label target
+    - profit_thresholds: список порогов для BUY/SELL на каждый горизонт
+    - label_smoothing: небольшое сглаживание целевой переменной (anti-stuck effect)
     """
+    def _extract_features_per_symbol(data):
+        data = data.copy()
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            data[col] = pd.to_numeric(data[col], errors='coerce').astype(np.float32)
+        data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+        data = convert_df_dtypes(data)
+
+        # Базовая метка рынка (bullish → 0)
+        data['market_type'] = 0
+
+        # 1. Базовые метрики доходности и импульса
+        data['returns'] = data['close'].pct_change()
+        data['log_returns'] = np.log(data['close'] / data['close'].shift(1) + 1e-7)
+        data['momentum_1m'] = data['close'].diff(1)
+        data['momentum_3m'] = data['close'].diff(3)
+        data['acceleration'] = data['momentum_1m'].diff()
+
+        # 2. Волатильность
+        roll_returns_20 = data['returns'].rolling(20)
+        volatility = roll_returns_20.std()
+        volume_volatility = data['volume'].pct_change().rolling(20).std()
+        base_strong = 0.001
+        base_medium = 0.0005
+        strong_threshold = base_strong * (1 + volatility / (volatility.mean() + 1e-7))
+        medium_threshold = base_medium * (1 + volatility / (volatility.mean() + 1e-7))
+        volume_factor = 1 + (volume_volatility / (volume_volatility.mean() + 1e-7))
+
+        # 3. Объем
+        data['volume_delta'] = data['volume'].diff()
+        data['volume_momentum'] = data['volume'].diff().rolling(3).sum()
+        volume_mean_5 = data['volume'].rolling(5).mean()
+        data['volume_ratio'] = data['volume'] / (volume_mean_5 * volume_factor + 1e-7)
+
+        # 4. Быстрые тренды
+        data['sma_2'] = SMAIndicator(data['close'], window=2).sma_indicator()
+        data['sma_3'] = SMAIndicator(data['close'], window=3).sma_indicator()
+        data['sma_10'] = SMAIndicator(data['close'], window=10).sma_indicator()
+        data['ema_3'] = data['close'].ewm(span=3, adjust=False).mean()
+        data['ema_5'] = data['close'].ewm(span=5, adjust=False).mean()
+
+        # 5. Микро-тренды
+        data['micro_trend'] = np.where(
+            data['close'] > data['close'].shift(1), 1,
+            np.where(data['close'] < data['close'].shift(1), -1, 0)
+        )
+        data['micro_trend_strength'] = data['micro_trend'].rolling(3).sum()
+
+        # 6. MACD
+        macd = MACD(data['close'], window_slow=12, window_fast=6, window_sign=3)
+        data['macd'] = macd.macd()
+        data['macd_signal'] = macd.macd_signal()
+        data['macd_diff'] = data['macd'] - data['macd_signal']
+        data['macd_acceleration'] = data['macd_diff'].diff()
+
+        # 7. Осцилляторы
+        data['rsi_5'] = RSIIndicator(data['close'], window=5).rsi()
+        data['rsi_3'] = RSIIndicator(data['close'], window=3).rsi()
+        stoch = StochasticOscillator(data['high'], data['low'], data['close'], window=5)
+        data['stoch_k'] = stoch.stoch()
+        data['stoch_d'] = stoch.stoch_signal()
+
+        # 8. Волатильность и позиции в Bollinger Bands
+        bb = BollingerBands(data['close'], window=10)
+        data['bb_width'] = bb.bollinger_wband()
+        data['bb_position'] = (data['close'] - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-7)
+        data['atr_3'] = AverageTrueRange(data['high'], data['low'], data['close'], window=3).average_true_range()
+
+        # 9. Свечной анализ
+        data['candle_body'] = data['close'] - data['open']
+        data['body_ratio'] = np.abs(data['candle_body']) / (data['high'] - data['low'] + 1e-7)
+        data['upper_wick'] = data['high'] - np.maximum(data['open'], data['close'])
+        data['lower_wick'] = np.minimum(data['open'], data['close']) - data['low']
+
+        # 10. Объемные индикаторы
+        data['obv'] = OnBalanceVolumeIndicator(data['close'], data['volume']).on_balance_volume()
+        data['volume_trend'] = data['volume'].diff() / (data['volume'].shift(1) + 1e-7)
+
+        # 11. Индикаторы ускорения
+        data['price_acceleration'] = data['returns'].diff()
+        data['volume_acceleration'] = data['volume_delta'].diff()
+
+        # 12. Multi-horizon target (агрессивная)
+        # Покрываем сразу несколько горизонтов и несколько порогов
+        buy = np.zeros(len(data), dtype=bool)
+        sell = np.zeros(len(data), dtype=bool)
+        for horizon, thr in zip(multi_horizon, profit_thresholds):
+            future_ret = data['close'].shift(-horizon) / data['close'] - 1
+            buy |= (future_ret > thr)
+            sell |= (future_ret < -thr)
+        # Label smoothing: чуть-чуть BUY/SELL в HOLD
+        target = np.zeros(len(data), dtype=np.float32) + label_smoothing
+        target[buy] = 1 - label_smoothing
+        target[sell] = 2 - label_smoothing
+        data = data.iloc[:-max(multi_horizon)] # урезаем хвост, где нет future
+
+        # Дополнительное условие для SELL — высокая RSI и верхняя BB, для BUY — объём, MACD, нижняя BB
+        future_ret = data['close'].shift(-1) / data['close'] - 1  # самый короткий горизонт для условия
+        strong_buy = (
+            (future_ret > profit_thresholds[0]) &
+            (data['volume'] > data['volume'].rolling(5).mean()) &
+            (data['macd_diff'] > 0) &
+            (data['bb_position'] < 0.6)
+        )
+        strong_sell = (
+            (future_ret < -profit_thresholds[0]) &
+            (data['rsi_5'] > 60) &
+            (data['bb_position'] > 0.4)
+        )
+        target[strong_buy] = 1
+        target[strong_sell] = 2
+
+        # Округляем для категоризации
+        data['target'] = np.round(target).astype(int)
+        return data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+
     if 'symbol' in data.columns:
         grouped = data.groupby('symbol')
         features = grouped.apply(_extract_features_per_symbol).reset_index(drop=True)
     else:
         features = _extract_features_per_symbol(data)
-    
+    # Логируем дистрибуцию!
+    print("Target distrib:", features['target'].value_counts(normalize=True))
     return features
 
-
-def _extract_features_per_symbol(data):
-    """
-    Извлечение признаков для одного символа с приведением столбцов к числовому типу,
-    вычислением технических индикаторов и изменённой логикой формирования целевой переменной.
-    Здесь сгруппированы rolling‑операции для уменьшения количества проходов.
-    """
-    data = data.copy()
-    # Приведение столбцов к числовому типу с заполнением пропусков
-    for col in ['open', 'high', 'low', 'close', 'volume']:
-        data[col] = pd.to_numeric(data[col], errors='coerce').astype(np.float32)
-    data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
-    data = convert_df_dtypes(data)
-
-    # Устанавливаем базовую метку рынка (bullish → 0)
-    data['market_type'] = 0
-
-    # 1. Базовые метрики доходности и импульса
-    data['returns'] = data['close'].pct_change()
-    data['log_returns'] = np.log(data['close'] / data['close'].shift(1) + 1e-7)
-    data['momentum_1m'] = data['close'].diff(1)
-    data['momentum_3m'] = data['close'].diff(3)
-    data['acceleration'] = data['momentum_1m'].diff()
-
-    # 2. Расчет динамических порогов на основе волатильности
-    # Группируем rolling для returns с окном 20
-    roll_returns_20 = data['returns'].rolling(20)
-    volatility = roll_returns_20.std()
-    volume_volatility = data['volume'].pct_change().rolling(20).std()  # отдельно для volume
-    base_strong = 0.001
-    base_medium = 0.0005
-    strong_threshold = base_strong * (1 + volatility / (volatility.mean() + 1e-7))
-    medium_threshold = base_medium * (1 + volatility / (volatility.mean() + 1e-7))
-    volume_factor = 1 + (volume_volatility / (volume_volatility.mean() + 1e-7))
-
-    # 3. Объемные показатели для определения силы движения
-    data['volume_delta'] = data['volume'].diff()
-    # Группируем rolling для volume.diff() с окном 3
-    roll_vol_diff_3 = data['volume'].diff().rolling(3)
-    data['volume_momentum'] = roll_vol_diff_3.sum()
-    # Группируем rolling для volume с окном 5
-    roll_volume_5 = data['volume'].rolling(5)
-    volume_mean_5 = roll_volume_5.mean()
-    volume_ratio = data['volume'] / (volume_mean_5 * volume_factor + 1e-7)
-    data['volume_ratio'] = volume_ratio  # сохраняем результат
-
-    # 4. Быстрые трендовые индикаторы для HFT
-    data['sma_2'] = SMAIndicator(data['close'], window=2).sma_indicator()
-    data['sma_3'] = SMAIndicator(data['close'], window=3).sma_indicator()
-    data['sma_10'] = SMAIndicator(data['close'], window=10).sma_indicator()
-    data['ema_3'] = data['close'].ewm(span=3, adjust=False).mean()
-    data['ema_5'] = data['close'].ewm(span=5, adjust=False).mean()
-
-    # 5. Микро-тренды для HFT
-    data['micro_trend'] = np.where(
-        data['close'] > data['close'].shift(1), 1,
-        np.where(data['close'] < data['close'].shift(1), -1, 0)
-    )
-    # Группируем rolling для micro_trend с окном 3
-    roll_micro_3 = data['micro_trend'].rolling(3)
-    data['micro_trend_strength'] = roll_micro_3.sum()
-
-    # 6. Быстрый MACD для 1-минутных свечей
-    macd = MACD(data['close'], window_slow=12, window_fast=6, window_sign=3)
-    data['macd'] = macd.macd()
-    data['macd_signal'] = macd.macd_signal()
-    data['macd_diff'] = data['macd'] - data['macd_signal']
-    data['macd_acceleration'] = data['macd_diff'].diff()
-
-    # 7. Короткие осцилляторы
-    data['rsi_5'] = RSIIndicator(data['close'], window=5).rsi()
-    data['rsi_3'] = RSIIndicator(data['close'], window=3).rsi()
-    stoch = StochasticOscillator(data['high'], data['low'], data['close'], window=5)
-    data['stoch_k'] = stoch.stoch()
-    data['stoch_d'] = stoch.stoch_signal()
-
-    # 8. Волатильность для оценки рисков и позиция в Bollinger Bands
-    bb = BollingerBands(data['close'], window=10)
-    data['bb_width'] = bb.bollinger_wband()
-    data['bb_position'] = (data['close'] - bb.bollinger_lband()) / (bb.bollinger_hband() - bb.bollinger_lband() + 1e-7)
-    data['atr_3'] = AverageTrueRange(data['high'], data['low'], data['close'], window=3).average_true_range()
-
-    # 9. Свечной анализ
-    data['candle_body'] = data['close'] - data['open']
-    data['body_ratio'] = np.abs(data['candle_body']) / (data['high'] - data['low'] + 1e-7)
-    data['upper_wick'] = data['high'] - np.maximum(data['open'], data['close'])
-    data['lower_wick'] = np.minimum(data['open'], data['close']) - data['low']
-
-    # 10. Объемные индикаторы
-    data['obv'] = OnBalanceVolumeIndicator(data['close'], data['volume']).on_balance_volume()
-    data['volume_trend'] = data['volume'].diff() / (data['volume'].shift(1) + 1e-7)
-
-    # 11. Индикаторы ускорения для HFT
-    data['price_acceleration'] = data['returns'].diff()
-    data['volume_acceleration'] = data['volume_delta'].diff()
-
-    # 12. Многоуровневая целевая переменная
-    future_returns = data['close'].shift(-1) / data['close'] - 1
-    data = data.iloc[:-1]
-    future_returns = future_returns.iloc[:-1]
-    data['target'] = np.where(
-        (future_returns > 0.0001) &
-        (data['volume'] > data['volume'].rolling(5).mean()) &
-        (data['macd_diff'] > 0) &
-        (data['bb_position'] < 0.6),
-        1,  # BUY
-        np.where(
-            (future_returns < -0.0001) &
-            (data['rsi_5'] > 60) &
-            (data['bb_position'] > 0.4),
-            2,  # SELL
-            0   # HOLD
-        )
-    )
-
-    return data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
 
 
@@ -961,16 +957,13 @@ def add_clustering_feature(data):
     data['cluster'] = kmeans.predict(data[features_for_clustering])
     return data
 
-def prepare_data(data):
-    logging.info("Начало подготовки данных")
 
-    # Проверка на пустые данные
+def prepare_data(data, chunk_size=100_000, nan_threshold=0.10):
+    logging.info("Начало подготовки данных")
     if data.empty:
         raise ValueError("Входные данные пусты")
-
     logging.info(f"Исходная форма данных: {data.shape}")
 
-    # Убедимся, что временной индекс установлен
     if not isinstance(data.index, pd.DatetimeIndex):
         if 'timestamp' in data.columns:
             data['timestamp'] = pd.to_datetime(data['timestamp'], errors='coerce')
@@ -978,23 +971,28 @@ def prepare_data(data):
         else:
             raise ValueError("Данные не содержат временного индекса или колонки 'timestamp'.")
 
+    def filter_bad_features(df, nan_threshold=0.10):
+        bad_cols = [col for col in df.columns if df[col].isna().mean() + np.isinf(df[col]).mean() > nan_threshold]
+        if bad_cols:
+            logging.warning(f"Удаляются плохие признаки: {bad_cols}")
+            df = df.drop(columns=bad_cols)
+        return df
+
     def process_chunk(df_chunk):
         df_chunk = extract_features(df_chunk)
         df_chunk = remove_outliers(df_chunk)
         df_chunk = add_clustering_feature(df_chunk)
+        df_chunk = filter_bad_features(df_chunk, nan_threshold)
         return df_chunk
 
-    # Применяем обработку по чанкам, если датасет очень большой
-    data = apply_in_chunks(data, process_chunk, chunk_size=100000)
-    logging.info(f"После обработки (извлечение признаков, удаление выбросов, кластеризация): {data.shape}")
+    data = apply_in_chunks(data, process_chunk, chunk_size=chunk_size)
+    data = filter_bad_features(data, nan_threshold)
 
-
-    # Список признаков
+    logging.info(f"После обработки: {data.shape}")
     features = [col for col in data.columns if col != 'target']
     logging.info(f"Количество признаков: {len(features)}")
     logging.info(f"Список признаков: {features}")
     logging.info(f"Распределение target:\n{data['target'].value_counts()}")
-
     return data, features
 
 
@@ -1025,38 +1023,25 @@ def load_last_saved_model(model_filename):
 
 
 def balance_classes(X, y):
-    """
-    Балансировка классами через SMOTETomek, с гарантией,
-    что в выборке до SMOTE есть все три класса 0,1,2.
-    """
-    # максимально разрешенный объём для SMOTE
+    print("Before balance:", Counter(y))
     max_for_smote = 300_000
-
-    # если данных слишком много — делаем подвыборку, иначе используем всё
     if len(y) > max_for_smote:
-        # здесь можно stratified sampling, но для простоты возьмём случайно:
         idx = np.random.RandomState(42).permutation(len(y))[:max_for_smote]
         X_sample = X[idx]
         y_sample = y[idx]
     else:
         X_sample, y_sample = X, y
 
-    # гарантируем, что в y_sample есть все три класса
-    for cls in (0, 1, 2):
-        if cls not in y_sample:
-            # найдём хотя бы один пример этого класса в полном y
-            full_idx = np.where(y == cls)[0]
-            if full_idx.size > 0:
-                i = np.random.choice(full_idx)
-                X_sample = np.vstack([X_sample, X[i : i+1]])
-                y_sample = np.concatenate([y_sample, [cls]])
-            # если же в полной выборке вообще нет этого класса —
-            # значит данные изначально одного типа, тут уж ничем помочь нельзя
+    # check if all classes exist
+    missing_classes = set([0,1,2]) - set(np.unique(y_sample))
+    if missing_classes:
+        raise Exception(f"Нет классов: {missing_classes}. Проверь target разметку!")
 
-    # применяем SMOTETomek
     smt = SMOTETomek(random_state=42)
     X_res, y_res = smt.fit_resample(X_sample, y_sample.astype(int))
+    print("After balance:", Counter(y_res))
     return X_res, y_res
+
 
 
 
@@ -1195,10 +1180,34 @@ def build_bullish_neural_network(data):
         out = Dense(3, activation="softmax")(x)
         baseline_model = Model(inp, out)
         baseline_model.compile(
-            optimizer=Adam(learning_rate=3e-3),
+            optimizer=Adam(learning_rate=1e-4),
             loss="sparse_categorical_crossentropy",
             metrics=[tf.keras.metrics.SparseCategoricalAccuracy(name="baseline_acc")]
         )
+    
+    def find_best_lr(model, X_train, y_train, batch_size=128, min_lr=1e-5, max_lr=1e-2, num_lrs=30):
+        import numpy as np
+        import matplotlib.pyplot as plt
+        orig_weights = model.get_weights()
+        lrs = np.logspace(np.log10(min_lr), np.log10(max_lr), num_lrs)
+        losses = []
+        for lr in lrs:
+            tf.keras.backend.set_value(model.optimizer.lr, lr)
+            model.set_weights(orig_weights)  # сбросить веса!
+            loss = model.fit(X_train, y_train, batch_size=batch_size, epochs=1, verbose=0).history['loss'][-1]
+            losses.append(loss)
+        plt.plot(lrs, losses)
+        plt.xscale('log')
+        plt.xlabel("Learning rate")
+        plt.ylabel("Loss")
+        plt.title("Learning Rate Finder")
+        plt.show()
+        # Верни оптимальный lr, если хочешь:
+        return lrs[np.argmin(losses)]
+
+    best_lr = find_best_lr(baseline_model, X_train_seq, y_train_seq)
+    print("Лучший lr (визуально или автоматически):", best_lr)
+
 
     # --- Загрузка последнего baseline чекпоинта, если есть ---
     base_checks = sorted(
@@ -1221,6 +1230,7 @@ def build_bullish_neural_network(data):
     )
 
     base_ckpt = "/workspace/saved_models/bullish/baseline_bullish_weights.h5"
+    f1_callback = F1Callback((X_val_seq, y_val_seq))
     baseline_callbacks = [
         EarlyStopping(monitor="val_loss", patience=25, restore_best_weights=True, verbose=1),
         ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=8, min_lr=1e-6, verbose=1),
@@ -1239,6 +1249,16 @@ def build_bullish_neural_network(data):
         ),
         TensorBoard(log_dir=f"logs/baseline/{int(time.time())}")
     ]
+    
+    
+    baseline_model = Model(inp, out)  # переинициализация!
+    baseline_model.compile(
+        optimizer=Adam(learning_rate=best_lr),
+        loss="sparse_categorical_crossentropy",
+        metrics=[tf.keras.metrics.SparseCategoricalAccuracy(name="baseline_acc")]
+    )
+
+
     baseline_model.fit(
         train_ds,
         validation_data=val_ds,

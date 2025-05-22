@@ -43,7 +43,9 @@ from sklearn.metrics import f1_score
 import joblib
 from filterpy.kalman import KalmanFilter
 from utils_output import ensure_directory, copy_output, save_model_output
-
+from sklearn.feature_selection import SelectKBest, mutual_info_classif
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.utils.class_weight import compute_class_weight
 
 # Создаем необходимые директории
 required_dirs = [
@@ -56,6 +58,31 @@ required_dirs = [
 
 for directory in required_dirs:
     os.makedirs(directory, exist_ok=True)
+    
+nan_threshold = 0.05
+n_features = 32
+    
+    
+class PnLCallback(tf.keras.callbacks.Callback):
+    def __init__(self, val_data, returns_val, commission=0.0002):
+        super().__init__()
+        self.val_data = val_data
+        self.returns_val = returns_val
+        self.commission = commission
+
+    def on_epoch_end(self, epoch, logs=None):
+        X_val, y_val = self.val_data
+        y_pred = np.argmax(self.model.predict(X_val, verbose=0), axis=1)
+        pnl = 0.0
+        for yp, yt, r in zip(y_pred, y_val, self.returns_val):
+            if yp == 2 and yt == 2:  # SELL on true fall
+                pnl += abs(r) - self.commission
+            elif yp == 1 and yt == 1:
+                pnl += abs(r) - self.commission
+            else:
+                pnl -= self.commission
+        print(f"Epoch {epoch+1}: PnL (validation): {pnl:.6f}")
+
     
     
 # Универсальная функция для чанкования DataFrame
@@ -245,35 +272,20 @@ def preprocess_market_data(data_dict):
     
 
 # Кастомная функция потерь для медвежьего рынка, ориентированная на минимизацию убытков
-def custom_profit_loss(y_true, y_pred):
-    """
-    Функция потерь для медвежьего рынка.
-    y_true: тензор истинных меток, где 0 = Hold, 1 = Buy, 2 = Sell.
-    y_pred: тензор предсказаний (распределение вероятностей) с shape (batch_size, 3).
-    
-    Преобразуем y_pred в скалярное предсказание, вычислив взвешенную сумму по классам.
-    """
-    # Преобразование распределения softmax в скалярное предсказание:
-    # Здесь веса соответствуют номерам классов: 0.0 для Hold, 1.0 для Buy, 2.0 для Sell.
+def custom_profit_loss(y_true, y_pred, commission=0.0002, missed_drop_penalty=2.0):
     class_weights = tf.constant([0.0, 1.0, 2.0], dtype=tf.float32)
-    # При tensordot по оси=1 получаем результат shape (batch_size,)
     y_pred_scalar = tf.tensordot(y_pred, class_weights, axes=1)
-    
-    # Приводим y_true к float32 и убеждаемся, что его shape = (batch_size,)
     y_true = tf.cast(y_true, dtype=tf.float32)
-    # Вычисляем разницу между скалярным предсказанием и истинным значением
     diff = y_pred_scalar - y_true
-    
-    # Логарифмический коэффициент для усиления больших ошибок
     log_factor = tf.math.log1p(tf.abs(diff) + 1e-7)
-    
-    # Параметры штрафов (настраиваются эмпирически)
-    false_long_penalty = 1.0   # штраф за ложное срабатывание Buy (если y_true == 0, а y_pred_scalar > 0.5)
-    false_short_penalty = 1.0  # штраф за ложное срабатывание Sell (если y_true == 0, а y_pred_scalar < 0.2)
-    missed_rally_penalty = 2.0  # штраф за пропущенный Buy (если y_true == 1, а y_pred_scalar <= 0.5)
-    missed_drop_penalty = 2.0   # штраф за пропущенный Sell (если y_true == 2, а y_pred_scalar >= 0.2)
-    
-    # CASE A: Если истинное значение Hold (0)
+
+    false_long_penalty = 1.0
+    false_short_penalty = 1.0
+    missed_rally_penalty = 2.0
+    # missed_drop_penalty усиливаем еще сильнее для SELL
+    missed_drop_penalty = missed_drop_penalty
+
+    # Case A: Hold
     loss_hold = tf.where(
         y_pred_scalar > 0.5,
         false_long_penalty * tf.abs(diff) * log_factor,
@@ -283,22 +295,18 @@ def custom_profit_loss(y_true, y_pred):
             tf.abs(diff) * log_factor
         )
     )
-    
-    # CASE B: Если истинное значение Buy (1)
+    # Case B: Buy
     loss_buy = tf.where(
         y_pred_scalar <= 0.5,
         missed_rally_penalty * tf.abs(diff) * log_factor,
         tf.abs(diff) * log_factor
     )
-    
-    # CASE C: Если истинное значение Sell (2)
+    # Case C: Sell
     loss_sell = tf.where(
         y_pred_scalar >= 0.2,
         missed_drop_penalty * tf.abs(diff) * log_factor,
         tf.abs(diff) * log_factor
     )
-    
-    # Объединяем случаи в зависимости от истинной метки
     base_loss = tf.where(
         tf.equal(y_true, 0.0),
         loss_hold,
@@ -308,25 +316,25 @@ def custom_profit_loss(y_true, y_pred):
             loss_sell
         )
     )
-    
-    # Штраф за неуверенные предсказания: если предсказание находится между 0.3 и 0.7
     uncertainty_penalty = tf.where(
         tf.logical_and(y_pred_scalar > 0.3, y_pred_scalar < 0.7),
         0.5 * tf.abs(diff) * log_factor,
         0.0
     )
-    
-    # Штраф за задержку реакции:
     batch_size = tf.shape(diff)[0]
     time_indices = tf.cast(tf.range(batch_size), tf.float32)
     time_penalty = 0.1 * tf.abs(diff) * time_indices / tf.cast(batch_size, tf.float32)
-    
-    # Штраф за транзакционные издержки: резкие изменения предсказаний между соседними точками
-    transaction_cost = 0.001 * tf.reduce_sum(tf.abs(y_pred_scalar[1:] - y_pred_scalar[:-1]))
-    
-    total_loss = tf.reduce_mean(base_loss + uncertainty_penalty + time_penalty) + transaction_cost
-    
+
+    # Комиссия и flip-flop
+    transaction_cost = commission * tf.reduce_sum(tf.abs(y_pred_scalar[1:] - y_pred_scalar[:-1]))
+    flip_flop_penalty = 0.002 * tf.reduce_sum(tf.abs(y_pred_scalar[1:] - y_pred_scalar[:-1]))
+
+    total_loss = tf.reduce_mean(base_loss + uncertainty_penalty + time_penalty) + transaction_cost + flip_flop_penalty
+
+    tf.print("Batch max loss:", tf.reduce_max(base_loss))
+
     return total_loss
+
 
 
 # Attention Layer
@@ -767,39 +775,29 @@ def adjust_target(data, threshold=-0.0005, trend_window=50):
     return data
 
 # Извлечение признаков
-def extract_features(data):
+def extract_features(data, commission=0.0002):
     logging.info("Извлечение признаков для медвежьего рынка")
     data = data.copy()
-    # Применяем фильтр Калмана, как и раньше
     data = remove_noise(data)
 
-    # Базовые расчёты
+    # Все твои базовые расчёты ниже без изменений ...
     returns = data['close'].pct_change()
-    # Группируем rolling-вычисления для 'volume'
     volume_agg = data['volume'].rolling(10).agg(['mean', 'std'])
     data['volume_ma'] = volume_agg['mean']
     data['volume_ratio'] = data['volume'] / (volume_agg['mean'] + 1e-7)
-    # Цена ускорения (diff от returns)
     price_acceleration = returns.diff()
-
-    # MACD и связанные показатели – оставляем без изменений (они используют внешнюю библиотеку)
     macd = MACD(data['smoothed_close'], window_slow=26, window_fast=12, window_sign=9)
     data['macd'] = macd.macd()
     data['macd_signal'] = macd.macd_signal()
     data['macd_diff'] = data['macd'] - data['macd_signal']
     data['macd_slope'] = data['macd_diff'].diff()
-    
-    # RSI с окном 5
     data['rsi_5'] = RSIIndicator(data['close'], window=5).rsi()
-    
-    # Bollinger Bands для определения положения цены
     bb = BollingerBands(data['smoothed_close'], window=20)
     data['bb_high'] = bb.bollinger_hband()
     data['bb_low'] = bb.bollinger_lband()
     data['bb_width'] = bb.bollinger_wband()
     data['bb_position'] = (data['close'] - data['bb_low']) / ((data['bb_high'] - data['bb_low']) + 1e-7)
 
-    # Пример динамических порогов (оставляем как есть)
     def calculate_dynamic_thresholds(window=10):
         vol = returns.rolling(window).std()
         avg_vol = vol.rolling(100).mean()
@@ -812,18 +810,25 @@ def extract_features(data):
 
     strong_threshold, medium_threshold = calculate_dynamic_thresholds()
 
-    # Изменённый блок для формирования целевой переменной (логика сохранена)
+    # --- КОРРЕКТИРОВКА TARGET! ---
+    # SELL только если падение сильнее комиссии
+    future_ret = data['close'].shift(-1) / data['close'] - 1
+    sell = ((future_ret < -commission) & (data['macd_diff'] < 0))
+    # BUY если явный откат вверх
+    buy = ((future_ret > commission) & (data['bb_position'] < 0.6) & (data['rsi_5'] < 50))
+    # HOLD — всё остальное
+
+    # Стабилизация: дропаем "слабые" движения вообще (могут портить обучение!)
+    mask_strong_move = sell | buy
+    data = data[mask_strong_move].copy()  # только реально прибыльные сделки
+
+    # Делаем именно твой формат target, но с учетом комиссии и чистоты классов:
     data['target'] = np.where(
-        (((returns.shift(-1) < -0.00005) | (price_acceleration < -0.00005)) & (data['macd_diff'] < 0)),
-        2,
-        np.where(
-            (((returns.shift(-1) > 0.0001) | (data['rsi_5'] < 50)) & (data['bb_position'] < 0.6)),
-            1,
-            0
-        )
+        sell, 2,
+        np.where(buy, 1, 0)
     )
 
-    # Дополнительные расчёты (объём, давление, волатильность, трендовые индикаторы и т.д.) – оставляем как есть.
+    # Все твои расчеты ниже ОСТАВЛЯЮ без изменений:
     data['log_returns'] = np.log(data['close'] / data['close'].shift(1))
     data['selling_pressure'] = data['volume'] * np.abs(data['close'] - data['open']) * np.where(data['close'] < data['open'], 1, 0)
     data['buying_pressure'] = data['volume'] * np.abs(data['close'] - data['open']) * np.where(data['close'] > data['open'], 1, 0)
@@ -832,18 +837,15 @@ def extract_features(data):
     data['volatility_ma'] = data['volatility'].rolling(20).mean()
     data['volatility_ratio'] = data['volatility'] / (data['volatility_ma'] + 1e-7)
 
-    # Трендовые индикаторы по разным периодам
     for period in [3, 5, 8, 13, 21]:
         data[f'sma_{period}'] = SMAIndicator(data['smoothed_close'], window=period).sma_indicator()
         data[f'ema_{period}'] = data['smoothed_close'].ewm(span=period, adjust=False).mean()
 
-    # Объёмные индикаторы
     data['obv'] = OnBalanceVolumeIndicator(data['close'], data['volume']).on_balance_volume()
     data['cmf'] = ChaikinMoneyFlowIndicator(data['high'], data['low'], data['close'], data['volume']).chaikin_money_flow()
     data['volume_change'] = data['volume'].pct_change()
     data['volume_ma_ratio'] = data['volume'] / data['volume'].rolling(20).mean()
 
-    # Осцилляторы и уровни поддержки/сопротивления
     for period in [7, 14, 21]:
         data[f'rsi_{period}'] = RSIIndicator(data['close'], window=period).rsi()
     data['stoch_k'] = StochasticOscillator(data['high'], data['low'], data['close'], window=7).stoch()
@@ -852,34 +854,28 @@ def extract_features(data):
     data['resistance_level'] = data['high'].rolling(20).max()
     data['price_to_support'] = data['close'] / data['support_level']
 
-    # Свечной анализ
     data['candle_body'] = np.abs(data['close'] - data['open'])
     data['upper_shadow'] = data['high'] - np.maximum(data['close'], data['open'])
     data['lower_shadow'] = np.minimum(data['close'], data['open']) - data['low']
     data['body_to_shadow_ratio'] = data['candle_body'] / ((data['upper_shadow'] + data['lower_shadow']).replace(0, 0.001))
 
-    # Ценовые уровни и прорывы
     data['price_level_breach'] = np.where(
         data['close'] < data['support_level'].shift(1), -1,
         np.where(data['close'] > data['resistance_level'].shift(1), 1, 0)
     )
 
-    # Индикаторы скорости движения
     data['price_acceleration'] = returns.diff()
     data['volume_acceleration'] = data['volume_change'].diff()
 
-    # Пересчёт Bollinger Bands (дополнительная проверка)
     bb2 = BollingerBands(data['smoothed_close'], window=20)
     data['bb_high'] = bb2.bollinger_hband()
     data['bb_low'] = bb2.bollinger_lband()
     data['bb_width'] = bb2.bollinger_wband()
     data['bb_position'] = (data['close'] - data['bb_low']) / ((data['bb_high'] - data['bb_low']) + 1e-7)
 
-    # ATR индикаторы
     for period in [5, 10, 20]:
         data[f'atr_{period}'] = AverageTrueRange(data['high'], data['low'], data['close'], window=period).average_true_range()
 
-    # Специальные признаки для HFT
     data['micro_trend'] = np.where(
         data['smoothed_close'] > data['smoothed_close'].shift(1), 1,
         np.where(data['smoothed_close'] < data['smoothed_close'].shift(1), -1, 0)
@@ -887,15 +883,13 @@ def extract_features(data):
     data['micro_trend_sum'] = data['micro_trend'].rolling(5).sum()
     data['volume_acceleration_5m'] = (data['volume'].diff() / data['volume'].rolling(5).mean()).fillna(0)
 
-    # Если 'clean_returns' отсутствует, создаём его
     if 'clean_returns' not in data.columns:
         data['clean_returns'] = data['smoothed_close'].pct_change()
 
-    # Признаки силы медвежьего движения
     data['bearish_strength'] = np.where(
-        (data['close'] < data['open']) & 
-        (data['volume'] > data['volume'].rolling(20).mean() * 1.5) & 
-        (data['close'] == data['low']) & 
+        (data['close'] < data['open']) &
+        (data['volume'] > data['volume'].rolling(20).mean() * 1.5) &
+        (data['close'] == data['low']) &
         (data['clean_returns'] < 0),
         3,
         np.where(
@@ -906,35 +900,27 @@ def extract_features(data):
             np.where(data['close'] < data['open'], 1, 0)
         )
     )
-    
-    # Формирование словаря признаков
+    # Все твои полезные фичи — на месте!
+
     features = {}
     features['target'] = data['target']
-
     for col in data.columns:
         if col not in ['market_type']:
             features[col] = data[col]
 
-    # Добавляем межмонетные признаки, если они имеются
-    if 'btc_corr' in data.columns:
-        features['btc_corr'] = data['btc_corr']
-    if 'rel_strength_btc' in data.columns:
-        features['rel_strength_btc'] = data['rel_strength_btc']
-    if 'beta_btc' in data.columns:
-        features['beta_btc'] = data['beta_btc']
+    # межмонетные фичи
+    for f in ['btc_corr', 'rel_strength_btc', 'beta_btc']:
+        if f in data.columns:
+            features[f] = data[f]
 
-    # Признаки подтверждения объёмом, если они имеются
-    if 'volume_strength' in data.columns:
-        features['volume_strength'] = data['volume_strength']
-    if 'volume_accumulation' in data.columns:
-        features['volume_accumulation'] = data['volume_accumulation']
+    for f in ['volume_strength', 'volume_accumulation']:
+        if f in data.columns:
+            features[f] = data[f]
 
-    # Очищенные от шума признаки, если они имеются
     if 'clean_returns' in data.columns:
         features['clean_returns'] = data['clean_returns']
 
     features_df = pd.DataFrame(features)
-
     logging.info(f"Количество признаков: {len(features_df.columns)}")
     logging.info(f"Проверка на NaN: {features_df.isna().sum().sum()}")
     logging.info(f"Распределение целевой переменной:\n{features_df['target'].value_counts()}")
@@ -944,11 +930,22 @@ def extract_features(data):
     if num_nans > 0:
         logging.warning(f"⚠ Найдено {num_nans} пропущенных значений. Заполняем...")
         data.fillna(0, inplace=True)
+        
+    # Проверка, что в таргете ровно 3 класса (0, 1, 2), иначе ошибка
+    target_classes = sorted(data['target'].dropna().unique())
+    if set(target_classes) != {0, 1, 2}:
+        raise ValueError(f"Target must have exactly 3 classes [0,1,2], found: {target_classes}")
 
-    # Возвращаем DataFrame с обработанными признаками
     return data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
 
+
+def remove_weak_moves(data, commission=0.0002):
+    # Сохраняем только движения сильнее комиссии!
+    data['future_returns'] = data['close'].shift(-1) / data['close'] - 1
+    data = data[(np.abs(data['future_returns']) > commission)]
+    data = data.drop(columns=['future_returns'])
+    return data
 
 
 def remove_outliers(data):
@@ -979,13 +976,10 @@ def add_clustering_feature(data):
 
 def prepare_data(data):
     logging.info("Начало подготовки данных")
-    
-    # Проверка на пустые данные
     if data.empty:
         raise ValueError("Входные данные пусты")
-        
     logging.info(f"Исходная форма данных: {data.shape}")
-    
+
     # Убедимся, что временной индекс установлен
     if not isinstance(data.index, pd.DatetimeIndex):
         if 'timestamp' in data.columns:
@@ -993,24 +987,38 @@ def prepare_data(data):
             data.set_index('timestamp', inplace=True)
         else:
             raise ValueError("Данные не содержат временного индекса или колонки 'timestamp'.")
-    
+
+    def filter_bad_features(df, nan_threshold=0.10):
+        bad_cols = [col for col in df.columns if df[col].isna().mean() + np.isinf(df[col]).mean() > nan_threshold]
+        if bad_cols:
+            logging.warning(f"Удаляются плохие признаки: {bad_cols}")
+            df = df.drop(columns=bad_cols)
+        return df
+
     def process_chunk(df_chunk):
         df_chunk = extract_features(df_chunk)
+        df_chunk = df_chunk.replace([np.inf, -np.inf], np.nan).dropna()
+        df_chunk = remove_weak_moves(df_chunk)
+        df_chunk = df_chunk.loc[:, ~df_chunk.columns.duplicated()]
         df_chunk = remove_outliers(df_chunk)
         df_chunk = add_clustering_feature(df_chunk)
         return df_chunk
 
-    # Применяем обработку по чанкам, если датасет очень большой
+    # Чанкованная обработка (по кускам если данных много)
     data = apply_in_chunks(data, process_chunk, chunk_size=100000)
+    data = filter_bad_features(data, nan_threshold)
     logging.info(f"После обработки (извлечение признаков, удаление выбросов, кластеризация): {data.shape}")
-    
-    # Список признаков - ИСКЛЮЧАЕМ timestamp и другие нечисловые колонки
+
+    # Список признаков — ИСКЛЮЧАЕМ timestamp и другие нечисловые колонки
     features = [col for col in data.columns if col not in ['target', 'timestamp'] and pd.api.types.is_numeric_dtype(data[col])]
-    logging.info(f"Количество признаков: {len(features)}")
-    logging.info(f"Список признаков: {features}")
+    selector = SelectKBest(mutual_info_classif, k=min(n_features, len(features)))
+    X_selected = selector.fit_transform(data[features], data['target'])
+    selected_features = [features[i] for i in range(len(features)) if selector.get_support()[i]]
+    logging.info(f"Топ-{len(selected_features)} признаков: {selected_features}")
     logging.info(f"Распределение target:\n{data['target'].value_counts()}")
-    
-    return data, features
+
+    return data[selected_features + ['target']], selected_features
+
 
 def clean_data(X, y):
     logging.info("Очистка данных от бесконечных значений и NaN")
@@ -1040,52 +1048,35 @@ def balance_classes(X, y, max_for_smote=300_000):
     """
     Балансировка классов с поддержкой numpy и pandas.
 
-    Параметры:
-    X: numpy.ndarray или pandas.DataFrame — признаки
-    y: numpy.ndarray или pandas.Series — метки
-    max_for_smote: int — максимальный размер выборки для SMOTETomek
-
-    Возвращает:
-    X_resampled, y_resampled
+    Возвращает: X_resampled (DataFrame), y_resampled (Series)
     """
     logging.info("Начало балансировки классов")
-    logging.info(f"Размеры данных до балансировки: X={getattr(X, 'shape', None)}, y={getattr(y, 'shape', None)}")
-    logging.info(f"Уникальные классы в y: {np.unique(y, return_counts=True)}")
-
-    # Определяем тип и делаем подвыборку, если нужно
     if isinstance(X, pd.DataFrame):
-        # Для pandas DataFrame
+        # Подвыборка если слишком много данных
         if len(X) > max_for_smote:
             X_sample = X.sample(n=max_for_smote, random_state=42)
-            # Поддерживаем pandas.Series или numpy.ndarray для y
-            if isinstance(y, pd.Series):
-                y_sample = y.loc[X_sample.index]
-            else:
-                # y — numpy.ndarray, используем iloc по индексам DataFrame
-                y_sample = y[X_sample.index.to_numpy()]
+            y_sample = y.loc[X_sample.index] if isinstance(y, pd.Series) else y[X_sample.index.to_numpy()]
         else:
             X_sample = X
             y_sample = y
     else:
-        # Для numpy.ndarray или других типов
         n_samples = X.shape[0]
-        if n_samples > max_for_smote:
-            idx = np.random.choice(n_samples, size=max_for_smote, replace=False)
-            X_sample = X[idx]
-            y_sample = y[idx]
-        else:
-            X_sample = X
-            y_sample = y
+        idx = np.random.choice(n_samples, size=max_for_smote, replace=False) if n_samples > max_for_smote else np.arange(n_samples)
+        X_sample = X[idx]
+        y_sample = y[idx]
 
-    # Проверяем наличие данных
     if len(X_sample) == 0 or len(y_sample) == 0:
         raise ValueError("Данные для балансировки пусты. Проверьте входные данные.")
 
-    # Применяем SMOTETomek
     smote_tomek = SMOTETomek(random_state=42)
     X_resampled, y_resampled = smote_tomek.fit_resample(X_sample, y_sample)
-
-    logging.info(f"Размеры данных после балансировки: X={getattr(X_resampled, 'shape', None)}, y={getattr(y_resampled, 'shape', None)}")
+    # Приведение к pd.DataFrame/pd.Series
+    if not isinstance(X_resampled, pd.DataFrame):
+        X_resampled = pd.DataFrame(X_resampled, columns=X_sample.columns if hasattr(X_sample, 'columns') else None)
+    if not isinstance(y_resampled, pd.Series):
+        y_resampled = pd.Series(y_resampled)
+    logging.info(f"Размеры данных после балансировки: X={X_resampled.shape}, y={y_resampled.shape}")
+    logging.info(f"Уникальные классы после балансировки: {y_resampled.value_counts().to_dict()}")
     return X_resampled, y_resampled
 
 
@@ -1173,50 +1164,40 @@ def build_bearish_neural_network(data, model_filename):
     """
     logging.info("Начало обучения медвежьей нейросети")
 
-    # --- параметры сети и пути к чекпоинтам
     network_name = "bearish_nn"
     checkpoint_path_regular = f"checkpoints/{network_name}_checkpoint_epoch_{{epoch:02d}}.h5"
     checkpoint_path_best    = f"checkpoints/{network_name}_best.h5"
 
-    # 1) Гарантированно создаём столбец timestamp
+    # 1. Гарантированно создаём столбец timestamp
     data = prepare_timestamp_column(data)
 
-    # 2) Выбор числовых признаков
-    features   = [c for c in data.columns if c not in ['target','timestamp'] and pd.api.types.is_numeric_dtype(data[c])]
-    X_df       = data[features].astype(float).copy()
-    y_series   = data['target'].astype(int).copy()
+    # 2. Выбор только числовых признаков
+    features = [c for c in data.columns if c not in ['target','timestamp'] and pd.api.types.is_numeric_dtype(data[c])]
+    X_df = data[features].astype(float).reset_index(drop=True).copy()
+    y_series = data['target'].astype(int).reset_index(drop=True).copy()
+
+    # 3. Оригинальный DataFrame для returns_val (важно для цепочки!)
+    data_for_returns = data.reset_index(drop=True).copy()
     logging.info(f"Исходные размеры: X={X_df.shape}, y={y_series.shape}")
 
-    # 3) Удаляем NaN и бесконечности
+    # 4. Удаляем NaN и бесконечности
     mask = X_df.notnull().all(axis=1) & np.isfinite(X_df).all(axis=1)
-    X_df, y_series = X_df.loc[mask], y_series.loc[mask]
+    X_df, y_series, data_for_returns = X_df.loc[mask], y_series.loc[mask], data_for_returns.loc[mask]
     logging.info(f"После очистки: X={X_df.shape}, y={y_series.shape}")
 
-    # 4) Балансировка классов
+    # 5. Балансировка классов
     X_bal, y_bal = balance_classes(X_df, y_series)
+    X_bal = pd.DataFrame(X_bal).reset_index(drop=True)
+    y_bal = pd.Series(y_bal).reset_index(drop=True)
     logging.info(f"После балансировки: X={X_bal.shape}, y={y_bal.shape}")
 
-    # 5) Разделение на train/validation
-    X_train_df, X_val_df, y_train, y_val = train_test_split(
-        X_bal, y_bal, test_size=0.2, random_state=42, stratify=y_bal
-    )
-    logging.info(f"Train: {X_train_df.shape}, Val: {X_val_df.shape}")
+    # 6. rolling split функция (индексы — только через .values и одинаковые по длине!)
+    def rolling_train_val_split(X, y, n_splits=5):
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        for train_idx, val_idx in tscv.split(X):
+            yield train_idx, val_idx
 
-    # 6) Масштабирование
-    scaler       = RobustScaler()
-    X_train_np   = scaler.fit_transform(X_train_df)
-    X_val_np     = scaler.transform(X_val_df)
-
-    # 7) reshape для LSTM (samples, timesteps=1, features)
-    X_train = X_train_np.reshape((X_train_np.shape[0], 1, X_train_np.shape[1]))
-    X_val   = X_val_np.reshape((X_val_np.shape[0], 1, X_val_np.shape[1]))
-    logging.info(f"После reshape: X_train={X_train.shape}, X_val={X_val.shape}")
-
-    # 8) Создание tf.data.Dataset
-    train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train)).batch(32).prefetch(tf.data.AUTOTUNE)
-    val_ds   = tf.data.Dataset.from_tensor_slices((X_val, y_val)).batch(32).prefetch(tf.data.AUTOTUNE)
-
-    # 9) Метрики HFT
+    # 7. Метрики (оставляем как есть)
     def hft_metrics(y_true, y_pred):
         rt   = tf.reduce_mean(tf.abs(y_pred[1:] - y_pred[:-1]))
         stab = tf.reduce_mean(tf.abs(y_pred[2:] - 2*y_pred[1:-1] + y_pred[:-2]))
@@ -1227,7 +1208,7 @@ def build_bearish_neural_network(data, model_filename):
         fals = tf.reduce_sum(tf.where(tf.logical_and(y_true==0, y_pred>=0.5), 1.0, 0.0))
         return succ / (fals + K.epsilon())
 
-    # 10) Инициализация стратегии
+    # 8. Инициализация стратегии
     os.makedirs('checkpoints', exist_ok=True)
     gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
@@ -1238,64 +1219,114 @@ def build_bearish_neural_network(data, model_filename):
     else:
         strategy = tf.distribute.get_strategy()
         logging.info("Используется стандартная стратегия (CPU)")
+        
+    best_f1 = -1
+    best_models = {}
 
-    # 11) Построение и компиляция модели
-    with strategy.scope():
-        inp = Input(shape=(X_train.shape[1], X_train.shape[2]))
-        def branch(x):
-            x = LSTM(256, return_sequences=True)(x)
-            x = BatchNormalization()(x)
-            return Dropout(0.2)(x)
-        b1, b2, b3 = branch(inp), branch(inp), branch(inp)
-        x = Add()([b1, b2, b3])
-        x = LSTM(256, return_sequences=False)(x)
-        x = BatchNormalization()(x); x = Dropout(0.3)(x)
-        x = Dense(128, activation='relu', name='embedding_layer')(x)
-        x = BatchNormalization()(x); x = Dropout(0.3)(x)
-        x = Dense(256, activation='relu')(x)
-        x = BatchNormalization()(x); x = Dropout(0.3)(x)
-        out = Dense(3, activation='softmax')(x)
-        model = Model(inp, out)
-        model.compile(
-            optimizer=Adam(1e-3),
-            loss=custom_profit_loss,
-            metrics=[hft_metrics, profit_ratio]
-        )
+    # 9. Роллинг-сплит. В каждом сплите отдельное масштабирование и обучение
+    for split_num, (train_idx, val_idx) in enumerate(rolling_train_val_split(X_bal.values, y_bal.values, n_splits=5)):
+        print(f"Split {split_num+1}: Train {len(train_idx)}, Val {len(val_idx)}")
 
-    # 12) Callbacks и обучение
-    cb_reg  = ModelCheckpoint(checkpoint_path_regular, save_weights_only=True, verbose=1)
-    cb_best = ModelCheckpoint(checkpoint_path_best, save_weights_only=True, save_best_only=True,
-                                monitor='val_loss', mode='min', verbose=1)
-    cb_lr   = ReduceLROnPlateau('val_loss', factor=0.5, patience=3, verbose=1)
-    cb_es   = EarlyStopping('val_loss', patience=15, restore_best_weights=True)
-    class_weights = {0:1.0, 1:2.0, 2:3.0}
-    history = model.fit(train_ds, epochs=200, validation_data=val_ds,
-                        class_weight=class_weights,
-                        callbacks=[cb_reg, cb_best, cb_lr, cb_es])
+        X_train_df, X_val_df = X_bal.iloc[train_idx], X_bal.iloc[val_idx]
+        y_train, y_val = y_bal.iloc[train_idx], y_bal.iloc[val_idx]
 
-    # 13) Удаление старых чекпоинтов
-    for f in glob.glob(f'checkpoints/{network_name}_checkpoint_epoch_*.h5'):
-        if not f.endswith(f'{network_name}_best.h5'):
-            os.remove(f)
+        # 10. Масштабирование отдельно для каждого сплита!
+        scaler = RobustScaler()
+        X_train_np = scaler.fit_transform(X_train_df)
+        X_val_np   = scaler.transform(X_val_df)
 
-    # 14) Ансамблирование с XGBoost
-    feat_ext = Model(model.input, model.get_layer('embedding_layer').output)
-    emb_tr = feat_ext.predict(X_train)
-    emb_vl = feat_ext.predict(X_val)
-    xgb_m = train_xgboost_on_embeddings(emb_tr, y_train)
-    nn_pred = model.predict(X_val)
-    xgb_pred = xgb_m.predict_proba(emb_vl)
-    ens = 0.5*nn_pred + 0.5*xgb_pred
-    cls = np.argmax(ens, axis=1)
-    logging.info(f"F1 ensemble bearish: {f1_score(y_val, cls, average='weighted')}")
+        # 11. Класс-веса (пропорциональны только train-выборке!)
+        classes = np.unique(y_train)
+        weights = compute_class_weight('balanced', classes=classes, y=y_train)
+        weights = [w*2 if cls==2 else w for w, cls in zip(weights, classes)]
+        class_weights = {int(cls): float(w) for cls, w in zip(classes, weights)}
 
-    # 15) Сохранение моделей
-    model.save(model_filename)
-    joblib.dump(xgb_m, os.path.join(os.path.dirname(model_filename), 'xgb_bearish.pkl'))
+        # 12. LSTM input shape
+        X_train = X_train_np.reshape((X_train_np.shape[0], 1, X_train_np.shape[1]))
+        X_val   = X_val_np.reshape((X_val_np.shape[0], 1, X_val_np.shape[1]))
 
-    return {"nn_model": model, "xgb_model": xgb_m,
-            "feature_extractor": feat_ext,
-            "ensemble_weight_nn": 0.5, "ensemble_weight_xgb": 0.5}, scaler
+        # 13. tf.data.Dataset
+        train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train)).batch(32).prefetch(tf.data.AUTOTUNE)
+        val_ds   = tf.data.Dataset.from_tensor_slices((X_val, y_val)).batch(32).prefetch(tf.data.AUTOTUNE)
+
+        # 14. returns_val — СТРОГО по индексам валидации!
+        # Используем тот df, с которого все начинали, чтобы совпало по длине
+        returns_val = data_for_returns.iloc[val_idx]['close'].pct_change().fillna(0).values
+        returns_val = np.nan_to_num(returns_val, nan=0)
+        # Важно! returns_val и y_val одной длины
+
+        # 15. Построение и компиляция модели
+        with strategy.scope():
+            inp = Input(shape=(X_train.shape[1], X_train.shape[2]))
+            def branch(x):
+                x = LSTM(256, return_sequences=True)(x)
+                x = BatchNormalization()(x)
+                return Dropout(0.2)(x)
+            b1, b2, b3 = branch(inp), branch(inp), branch(inp)
+            x = Add()([b1, b2, b3])
+            x = LSTM(256, return_sequences=False)(x)
+            x = BatchNormalization()(x); x = Dropout(0.3)(x)
+            x = Dense(128, activation='relu', name='embedding_layer')(x)
+            x = BatchNormalization()(x); x = Dropout(0.3)(x)
+            x = Dense(256, activation='relu')(x)
+            x = BatchNormalization()(x); x = Dropout(0.3)(x)
+            out = Dense(3, activation='softmax')(x)
+            model = Model(inp, out)
+            model.compile(
+                optimizer=Adam(1e-3),
+                loss=custom_profit_loss,
+                metrics=[hft_metrics, profit_ratio]
+            )
+
+        # 16. Callbacks
+        cb_reg  = ModelCheckpoint(checkpoint_path_regular, save_weights_only=True, verbose=1)
+        cb_best = ModelCheckpoint(checkpoint_path_best, save_weights_only=True, save_best_only=True,
+                                    monitor='val_loss', mode='min', verbose=1)
+        cb_lr   = ReduceLROnPlateau('val_loss', factor=0.5, patience=3, verbose=1)
+        cb_es   = EarlyStopping('val_loss', patience=15, restore_best_weights=True)
+        pnl_callback = PnLCallback((X_val, y_val), returns_val, commission=0.0002)
+        history = model.fit(train_ds, epochs=200, validation_data=val_ds,
+                            class_weight=class_weights,
+                            callbacks=[cb_reg, cb_best, cb_lr, cb_es, pnl_callback])
+
+        # 17. Чистка чекпоинтов
+        for f in glob.glob(f'checkpoints/{network_name}_checkpoint_epoch_*.h5'):
+            if not f.endswith(f'{network_name}_best.h5'):
+                os.remove(f)
+
+        # 18. Ансамблирование с XGBoost (embeddings)
+        feat_ext = Model(model.input, model.get_layer('embedding_layer').output)
+        emb_tr = feat_ext.predict(X_train)
+        emb_vl = feat_ext.predict(X_val)
+        xgb_m = train_xgboost_on_embeddings(emb_tr, y_train)
+        nn_pred = model.predict(X_val)
+        xgb_pred = xgb_m.predict_proba(emb_vl)
+        ens = 0.5*nn_pred + 0.5*xgb_pred
+        cls = np.argmax(ens, axis=1)
+        logging.info(f"F1 ensemble bearish: {f1_score(y_val, cls, average='weighted')}")
+
+        # 19. Сохраняем модели только для последнего сплита (или можешь для лучшего из всех — добавь best split selection)
+        # F1-score ансамбля
+        f1 = f1_score(y_val, cls, average='weighted')
+        logging.info(f"F1 ensemble bearish (split {split_num+1}): {f1:.5f}")
+
+        if f1 > best_f1:
+            best_f1 = f1
+            # Сохраняем модели, скейлер, фичи этого сплита
+            best_models = {
+                "nn_model": model,
+                "xgb_model": xgb_m,
+                "feature_extractor": feat_ext,
+                "ensemble_weight_nn": 0.5,
+                "ensemble_weight_xgb": 0.5,
+                "scaler": scaler
+            }
+            # Сохраняем модель на диск (можно сразу с _best)
+            model.save(model_filename)
+            joblib.dump(xgb_m, os.path.join(os.path.dirname(model_filename), 'xgb_bearish.pkl'))
+    # ВОЗВРАЩАЕМ ЛУЧШИЙ СПЛИТ
+    return best_models, best_models["scaler"]
+
 
 
 if __name__ == "__main__":
@@ -1325,13 +1356,12 @@ if __name__ == "__main__":
         logging.info(f"ℹ После подготовки столбца, колонки: {data.columns.tolist()}")
         logging.info(f"📈 Размер данных после загрузки: {data.shape}")
         logging.info("🛠 Извлечение признаков из данных...")
-        data = extract_features(data)
-        data.dropna(inplace=True)
-        data = data.loc[:, ~data.columns.duplicated()]
+        data, selected_features = prepare_data(data)
+
         if data.empty:
             raise ValueError("❌ Ошибка: После очистки данные пусты!")
         logging.info("🚀 Начало обучения модели для медвежьего рынка...")
-        build_bearish_neural_network(data)
+        build_bearish_neural_network(data, nn_model_filename)
     except Exception as e:
         logging.error(f"❌ Ошибка во время выполнения программы: {e}")
     finally:

@@ -43,6 +43,9 @@ from xgboost import XGBClassifier
 import xgboost as xgb  # если потребуется
 import joblib
 from utils_output import ensure_directory, copy_output, save_model_output
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import f1_score, accuracy_score
 
 
 
@@ -79,6 +82,43 @@ required_dirs = [
 
 for directory in required_dirs:
     os.makedirs(directory, exist_ok=True)
+    
+
+class PnLCallback(tf.keras.callbacks.Callback):
+    def __init__(self, X_val, y_val, close_val, commission=0.0002, patience=20):
+        super().__init__()
+        self.X_val = X_val
+        self.y_val = y_val
+        self.close_val = close_val
+        self.commission = commission
+        self.patience = patience
+        self.best_pnl = -np.inf
+        self.wait = 0
+
+    def on_epoch_end(self, epoch, logs=None):
+        y_pred = np.argmax(self.model.predict(self.X_val, verbose=0), axis=1)
+        pnl = 0.0
+        position = 0
+        for yp, yt, price in zip(y_pred, self.y_val, self.close_val):
+            # Симуляция торговли: если BUY/SELL, то учитываем доходность, иначе - комиссию
+            if yp == 2:   # BUY
+                pnl += (price / self.close_val[0]) - 1 - self.commission
+            elif yp == 1: # SELL
+                pnl += (self.close_val[0] / price) - 1 - self.commission
+            else:
+                pnl -= self.commission
+        print(f"Epoch {epoch+1}: Val PnL={pnl:.5f}")
+
+        # Early stopping по PnL
+        if pnl > self.best_pnl:
+            self.best_pnl = pnl
+            self.wait = 0
+        else:
+            self.wait += 1
+            if self.wait >= self.patience:
+                print(f"Early stopping: no PnL improvement in {self.patience} epochs")
+                self.model.stop_training = True
+
     
     
 # Универсальная функция для чанкования DataFrame
@@ -131,6 +171,31 @@ def calculate_cross_coin_features(data_dict):
         df['lead_lag_btc'] = df['close'].pct_change().shift(1).rolling(5).corr(btc_data['close'].pct_change())
         data_dict[symbol] = df
     return data_dict
+
+def rolling_train_val_split(X, y, n_splits=5):
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    for train_idx, val_idx in tscv.split(X):
+        yield train_idx, val_idx
+        
+def filter_bad_features(df, nan_threshold=0.1):
+    # Удаляет признаки с большим количеством NaN/Inf или с почти нулевой дисперсией
+    bad_cols = [col for col in df.columns if (
+        df[col].isna().mean() > nan_threshold or
+        np.isinf(df[col]).mean() > nan_threshold or
+        (df[col].std() < 1e-8)
+    )]
+    if bad_cols:
+        logging.warning(f"Удаляются плохие признаки: {bad_cols}")
+        df = df.drop(columns=bad_cols)
+    return df
+
+def check_prediction_distribution(model, X_real):
+    y_pred = np.argmax(model.predict(X_real, verbose=0), axis=1)
+    values, counts = np.unique(y_pred, return_counts=True)
+    dist = {int(v): int(c) for v, c in zip(values, counts)}
+    print("Distribution of predicted classes:", dist)
+    return dist
+
 
 
 def detect_anomalies(data):
@@ -230,62 +295,16 @@ def preprocess_market_data(data_dict):
     return data_dict
 
 # Кастомная функция потерь для флэтового рынка, ориентированная на минимизацию волатильности и частоту сделок
-def custom_profit_loss(y_true, y_pred):
-    """
-    Ваш "diff"-подход (BUY/SELL/HOLD) в многоклассовом варианте:
-      - y_true: (batch,) ∈ {0=HOLD,1=SELL,2=BUY}
-      - y_pred: (batch,3), softmax: [p(HOLD), p(SELL), p(BUY)]
-      
-    Логика (аналог вашей):
-      diff = y_pred - y_true_onehot
-      log_factor = log1p( sum(|diff|) )  [на сэмпл]
-      underestimation_penalty = (y_true_onehot > y_pred)? (..)^2 : 0
-      overestimation_penalty  = (y_true_onehot < y_pred)? (..)^2 : 0
-      gain = max(diff,0)
-      loss = abs(min(diff,0))
-      total_loss = mean( loss*2 + log_factor*1.5 + underest*3 - gain*1.5 + overest*2 )
-    """
-    # Превращаем метки в one-hot
-    y_true_onehot = tf.one_hot(tf.cast(y_true, tf.int32), depth=3)  # (batch,3)
-
-    # diff (batch,3)
+def custom_profit_loss(y_true, y_pred, commission=0.0002, missed_profit_penalty=2.0):
+    y_true_onehot = tf.one_hot(tf.cast(y_true, tf.int32), depth=3)
     diff = y_pred - y_true_onehot
-
-    # Лог-фактор (для крупных ошибок)
-    eps = 1e-7
-    # Сумма |diff| по классам => скаляр на сэмпл
-    diff_magnitude = tf.reduce_sum(tf.abs(diff), axis=1)
-    log_factor = tf.math.log1p(diff_magnitude + eps)  # (batch,)
-
-    # Недооценка (когда y_true_onehot > y_pred)
-    underestimation_penalty = tf.where(y_true_onehot > y_pred,
-                                       tf.square(y_true_onehot - y_pred), 0.0)
-
-    # Переоценка (когда y_true_onehot < y_pred)
-    overestimation_penalty = tf.where(y_true_onehot < y_pred,
-                                      tf.square(y_pred - y_true_onehot), 0.0)
-
-    # gain = max(diff,0), loss = abs(min(diff,0)) (покомпонентно)
-    gain = tf.math.maximum(diff, 0.0)      # (batch,3)
-    negative_part = tf.math.minimum(diff, 0.0)
-    loss_ = tf.math.abs(negative_part)     # (batch,3)
-
-    # Сборка частей
-    # Пер-классная сумма: loss_*2 + underest*3 - gain*1.5 + overest*2
-    per_class_term = (
-        loss_ * 2.0 +
-        underestimation_penalty * 3.0 -
-        gain * 1.5 +
-        overestimation_penalty * 2.0
-    )  # shape=(batch,3)
-
-    # Складываем по классам
-    per_sample_sum = tf.reduce_sum(per_class_term, axis=1)  # (batch,)
-
-    # Добавляем log_factor *1.5
-    total = per_sample_sum + log_factor * 1.5
-
-    # Среднее по батчу
+    # flip-flop: комиссия за каждое переключение предсказанного действия (для батча)
+    flip_flop_penalty = commission * tf.reduce_sum(tf.abs(y_pred[1:] - y_pred[:-1]))
+    # Ошибка для сделок по неверному сигналу — усиливается для BUY/SELL ошибок
+    trade_penalty = tf.reduce_sum(tf.square(diff) * y_true_onehot * missed_profit_penalty, axis=1)
+    # HOLD: penalize когда сеть ошибается и выдает BUY/SELL на флэте
+    hold_penalty = tf.reduce_sum(tf.square(diff) * (1 - y_true_onehot), axis=1)
+    total = trade_penalty + hold_penalty + flip_flop_penalty
     return tf.reduce_mean(total)
 
 
@@ -820,6 +839,28 @@ def extract_features(data):
     
     return data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
+def filter_flat_targets(data, commission=0.0002, min_return=0.0005):
+    """
+    Оставляет только уверенные BUY/SELL, а HOLD — только если нет явного профита. 
+    Удаляет почти-нулевые изменения цены.
+    """
+    # Будем смотреть в будущее на 1 шаг для оценки доходности
+    data['future_return'] = data['close'].shift(-1) / data['close'] - 1
+
+    # Сильные сигналы (только если превышает комиссию и min_return)
+    buy_mask = data['future_return'] > (commission + min_return)
+    sell_mask = data['future_return'] < -(commission + min_return)
+    hold_mask = ~(buy_mask | sell_mask)
+
+    data['target'] = np.where(sell_mask, 1, np.where(buy_mask, 2, 0))
+
+    # Оставляем только явные случаи: если движение меньше min_return — выкидываем
+    data = data[(np.abs(data['future_return']) > min_return) | (data['target'] != 0)]
+
+    data = data.drop(columns=['future_return'])
+    return data
+
+
 
 def remove_outliers(data):
     Q1 = data.quantile(0.25)
@@ -1034,24 +1075,33 @@ def ensemble_predict(nn_model, xgb_model, feature_extractor, X_seq, weight_nn=0.
     return final_pred_classes
 
 
+def train_meta_ensemble(nn_pred, xgb_pred, y_val):
+    """
+    Тренирует meta-класс (логистическую регрессию) по вероятностям двух моделей.
+    На вход подаются вероятности нейросети и XGBoost, а также target.
+    """
+    X_meta = np.hstack([nn_pred, xgb_pred])
+    meta_clf = LogisticRegression(max_iter=1000, multi_class='multinomial')
+    meta_clf.fit(X_meta, y_val)
+    meta_pred = meta_clf.predict(X_meta)
+    f1 = f1_score(y_val, meta_pred, average='weighted')
+    acc = accuracy_score(y_val, meta_pred)
+    print(f"Meta-ensemble F1: {f1:.5f}, Accuracy: {acc:.5f}")
+    return meta_clf
+
 def build_flat_neural_network(data, model_filename):
-    """
-    Обучение нейросети для флэтового рынка.
+    import glob
+    from sklearn.model_selection import TimeSeriesSplit
+    from tensorflow.keras import Input, Model
+    from tensorflow.keras.layers import Dense, BatchNormalization, Dropout, Add, LSTM
+    from tensorflow.keras.optimizers import Adam
+    from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 
-    Parameters:
-        data (pd.DataFrame): Данные для обучения.
-        model_filename (str): Имя файла для сохранения модели.
-
-    Returns:
-        (ensemble_model: dict, scaler: RobustScaler)
-    """
-    # Создаем директории для чекпоинтов
     os.makedirs("checkpoints", exist_ok=True)
     network_name = "flat_neural_network"
     checkpoint_regular = f"checkpoints/{network_name}_checkpoint_epoch_{{epoch:02d}}.h5"
     checkpoint_best = f"checkpoints/{network_name}_best_model.h5"
 
-    # Попытка загрузить существующую модель
     if os.path.exists(model_filename):
         try:
             model = load_model(model_filename, custom_objects={"custom_profit_loss": custom_profit_loss})
@@ -1062,14 +1112,11 @@ def build_flat_neural_network(data, model_filename):
             logging.info("Тренировка будет запущена заново.")
 
     logging.info("Начало тренировки Flat NN")
-    # Выбор признаков
     features = [c for c in data.columns if c not in ['target','symbol','timestamp'] and pd.api.types.is_numeric_dtype(data[c])]
     logging.info(f"Используемые признаки: {features}")
 
-    # Подготовка X и y
     X_df = data[features].astype(float).copy()
     y = data['target'].astype(int).copy()
-    # Удаление NaN и бесконечностей
     mask = X_df.notnull().all(axis=1) & np.isfinite(X_df).all(axis=1)
     X_df, y = X_df.loc[mask], y.loc[mask]
     logging.info(f"После очистки: X={X_df.shape}, y={y.shape}")
@@ -1078,100 +1125,88 @@ def build_flat_neural_network(data, model_filename):
     logging.info(X_df.describe().to_string())
     check_feature_quality(X_df.values, y.values)
 
-    # Балансировка
     X_bal, y_bal = balance_classes(X_df, y)
     logging.info(f"После балансировки: X={X_bal.shape}, y={y_bal.shape}")
 
-    # Разделение
-    X_train_df, X_val_df, y_train, y_val = train_test_split(
-        X_bal, y_bal, test_size=0.2, random_state=42, stratify=y_bal
-    )
-    logging.info(f"Train: {X_train_df.shape}, Val: {X_val_df.shape}")
+    best_f1 = -1
+    best_models = {}
 
-    # Масштабирование
-    scaler = RobustScaler()
-    X_train_np = scaler.fit_transform(X_train_df)
-    X_val_np = scaler.transform(X_val_df)
-    # reshape для LSTM
-    X_train = X_train_np.reshape(X_train_np.shape[0], 1, X_train_np.shape[1])
-    X_val = X_val_np.reshape(X_val_np.shape[0], 1, X_val_np.shape[1])
-    logging.info(f"После reshape: X_train={X_train.shape}, X_val={X_val.shape}")
+    # Rolling split (TimeSeriesSplit!)
+    tscv = TimeSeriesSplit(n_splits=5)
+    for split_num, (train_idx, val_idx) in enumerate(tscv.split(X_bal)):
+        X_train, y_train = X_bal.iloc[train_idx], y_bal.iloc[train_idx]
+        X_val, y_val = X_bal.iloc[val_idx], y_bal.iloc[val_idx]
 
-    # Создаем датасеты
-    train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train)).batch(32).prefetch(tf.data.AUTOTUNE)
-    val_ds = tf.data.Dataset.from_tensor_slices((X_val, y_val)).batch(32).prefetch(tf.data.AUTOTUNE)
+        scaler = RobustScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_val_scaled = scaler.transform(X_val)
 
-    # Стратегия
-    try:
-        strategy = tf.distribute.MirroredStrategy()
-        logging.info("MirroredStrategy активна.")
-    except:
-        strategy = tf.distribute.get_strategy()
-        logging.info("Default strategy.")
+        # Только на train!
+        X_train_bal, y_train_bal = SMOTETomek(random_state=42).fit_resample(X_train_scaled, y_train)
 
-    with strategy.scope():
-        inp = Input(shape=(X_train.shape[1], X_train.shape[2]))
-        # три ветви
-        def branch(x):
-            x = LSTM(256, return_sequences=True)(x)
-            x = BatchNormalization()(x)
-            return Dropout(0.2)(x)
-        b1, b2, b3 = branch(inp), branch(inp), branch(inp)
-        x = Add()([b1, b2, b3])
-        x = LSTM(256)(x)
-        x = BatchNormalization()(x); x = Dropout(0.3)(x)
-        x = Dense(256, activation='relu')(x)
-        x = BatchNormalization()(x); x = Dropout(0.3)(x)
-        x = Dense(128, activation='relu', name='embedding_layer')(x)
-        x = BatchNormalization()(x); x = Dropout(0.3)(x)
+        # Для Dense сети (лучше для флэта)
+        inp = Input(shape=(X_train_bal.shape[1],))
+        x = Dense(128, activation='relu')(inp)
+        x = BatchNormalization()(x); x = Dropout(0.25)(x)
         x = Dense(64, activation='relu')(x)
-        x = BatchNormalization()(x)
+        x = BatchNormalization()(x); x = Dropout(0.25)(x)
+        x = Dense(32, activation='relu')(x)
+        x = BatchNormalization()(x); x = Dropout(0.25)(x)
+        emb = Dense(32, activation='relu', name='embedding_layer')(x)
+        x = BatchNormalization()(emb); x = Dropout(0.25)(x)
         out = Dense(3, activation='softmax')(x)
         model = Model(inp, out)
-        # метрика и компиляция
+
         def flat_trading_metric(y_true, y_pred):
             tr = tf.reduce_max(y_true, axis=0) - tf.reduce_min(y_true, axis=0)
             pr = tf.reduce_max(y_pred, axis=0) - tf.reduce_min(y_pred, axis=0)
             return tf.abs(tr - pr)
+
         model.compile(optimizer=Adam(1e-3), loss=custom_profit_loss, metrics=[flat_trading_metric])
 
-    # Callbacks
-    cb_reg = ModelCheckpoint(checkpoint_regular, save_weights_only=True, verbose=1)
-    cb_best = ModelCheckpoint(checkpoint_best, save_weights_only=True, save_best_only=True,
-                               monitor='val_flat_trading_metric', mode='min', verbose=1)
-    cb_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=3, mode='min')
-    cb_es = EarlyStopping(monitor='val_flat_trading_metric', patience=15, restore_best_weights=True)
+        cb_reg = ModelCheckpoint(checkpoint_regular, save_weights_only=True, verbose=1)
+        cb_best = ModelCheckpoint(checkpoint_best, save_weights_only=True, save_best_only=True,
+                                   monitor='val_flat_trading_metric', mode='min', verbose=1)
+        cb_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=3, mode='min')
+        cb_es = EarlyStopping(monitor='val_flat_trading_metric', patience=15, restore_best_weights=True)
 
-    # Веса классов
-    class_weights = {0:1.0, 1:2.5, 2:2.5}
+        class_weights = {0:1.0, 1:2.5, 2:2.5}
 
-    # Обучение
-    history = model.fit(
-        train_ds, epochs=200, validation_data=val_ds,
-        class_weight=class_weights,
-        callbacks=[cb_reg, cb_best, cb_lr, cb_es]
-    )
-    # Очистка старых чекпоинтов
-    for f in glob.glob(f"checkpoints/{network_name}_checkpoint_epoch_*.h5"): 
-        if f!=checkpoint_best: os.remove(f)
+        history = model.fit(
+            X_train_bal, y_train_bal, epochs=200,
+            validation_data=(X_val_scaled, y_val),
+            class_weight=class_weights,
+            callbacks=[cb_reg, cb_best, cb_lr, cb_es, PnLCallback(X_val_scaled, y_val, close_val)]
+        )
 
-    # Ансамблирование
-    feat_ext = Model(model.input, model.get_layer('embedding_layer').output)
-    emb_tr = feat_ext.predict(X_train)
-    emb_vl = feat_ext.predict(X_val)
-    xgb_m = train_xgboost_on_embeddings(emb_tr, y_train)
-    nn_pred = model.predict(X_val)
-    xgb_pred = xgb_m.predict_proba(emb_vl)
-    ens = 0.5*nn_pred + 0.5*xgb_pred
-    classes = np.argmax(ens, axis=1)
-    logging.info(f"F1 ensemble: {f1_score(y_val, classes, average='weighted')}")
+        # Ансамбль
+        feat_ext = Model(model.input, model.get_layer('embedding_layer').output)
+        emb_tr = feat_ext.predict(X_train_bal)
+        emb_vl = feat_ext.predict(X_val_scaled)
+        xgb_m = train_xgboost_on_embeddings(emb_tr, y_train_bal)
+        nn_pred = model.predict(X_val_scaled)
+        xgb_pred = xgb_m.predict_proba(emb_vl)
 
-    # Сохранение
-    model.save(model_filename)
-    joblib.dump(xgb_m, os.path.join(os.path.dirname(model_filename),'xgb_flat.pkl'))
+        # Meta-ensemble!
+        meta_clf = train_meta_ensemble(nn_pred, xgb_pred, y_val)
+        meta_input = np.hstack([nn_pred, xgb_pred])
+        meta_pred = meta_clf.predict(meta_input)
+        f1 = f1_score(y_val, meta_pred, average='weighted')
+        logging.info(f"Meta-ensemble F1: {f1:.5f} (split {split_num+1})")
 
-    return {"nn_model":model, "xgb_model":xgb_m, "feature_extractor":feat_ext,
-            "ensemble_weight_nn":0.5, "ensemble_weight_xgb":0.5}, scaler
+        if f1 > best_f1:
+            best_f1 = f1
+            best_models = {
+                "nn_model": model,
+                "xgb_model": xgb_m,
+                "meta_clf": meta_clf,
+                "feature_extractor": feat_ext,
+                "scaler": scaler
+            }
+            model.save(model_filename)
+            joblib.dump(xgb_m, os.path.join(os.path.dirname(model_filename),'xgb_flat.pkl'))
+            joblib.dump(meta_clf, os.path.join(os.path.dirname(model_filename),'meta_flat.pkl'))
+    return best_models, best_models["scaler"]
 
 
 
