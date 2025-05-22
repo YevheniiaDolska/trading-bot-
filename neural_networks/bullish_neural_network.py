@@ -811,10 +811,14 @@ def extract_features(data, multi_horizon=[1,2,3], profit_thresholds=[0.00005, 0.
         for col in ['open', 'high', 'low', 'close', 'volume']:
             data[col] = pd.to_numeric(data[col], errors='coerce').astype(np.float32)
         # 1) Заменяем ±inf на NaN, заполняем пропуски вперёд/назад
+        # 1) Инфицируем Inf → NaN, заливаем
         data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
-        # 2) Удаляем все строки, где остались NaN
-        data = data.dropna().reset_index(drop=True)
+        # 2) Оставляем только те строки, где всё ещё NaN **в фичах**, но не касаемся target
+        features = [c for c in data.columns if c not in ("target", "timestamp", "symbol")]
+        # удаляем строки, где **хотя бы в одной фиче** стоит NaN
+        data = data.dropna(subset=features).reset_index(drop=True)
+
 
         # 3) Теперь вы можете спокойно брать features и таргет
         features = [c for c in data.columns if c not in ("target","timestamp","symbol")]
