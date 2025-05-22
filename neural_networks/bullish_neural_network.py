@@ -1025,22 +1025,29 @@ def load_last_saved_model(model_filename):
 def balance_classes(X, y):
     print("Before balance:", Counter(y))
     max_for_smote = 300_000
+
+    # 1) стратифицированная подвыборка, чтобы сохранить все классы
     if len(y) > max_for_smote:
-        idx = np.random.RandomState(42).permutation(len(y))[:max_for_smote]
-        X_sample = X[idx]
-        y_sample = y[idx]
+        X_sample, _, y_sample, _ = train_test_split(
+            X, y, train_size=max_for_smote, stratify=y, random_state=42
+        )
     else:
         X_sample, y_sample = X, y
 
-    # check if all classes exist
-    missing_classes = set([0,1,2]) - set(np.unique(y_sample))
-    if missing_classes:
-        raise Exception(f"Нет классов: {missing_classes}. Проверь target разметку!")
+    # 2) на всякий случай, если какой-то класс всё же выпал
+    missing = set([0,1,2]) - set(np.unique(y_sample))
+    if missing:
+        for cls in missing:
+            idx0 = np.where(y == cls)[0][0]
+            X_sample = np.vstack([X_sample, X[idx0]])
+            y_sample = np.append(y_sample, cls)
 
+    # 3) собственно SMOTETomek
     smt = SMOTETomek(random_state=42)
     X_res, y_res = smt.fit_resample(X_sample, y_sample.astype(int))
     print("After balance:", Counter(y_res))
     return X_res, y_res
+
 
 
 
