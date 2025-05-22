@@ -810,13 +810,13 @@ def extract_features(data, multi_horizon=[1,2,3], profit_thresholds=[0.00005, 0.
         data = data.copy()
         for col in ['open', 'high', 'low', 'close', 'volume']:
             data[col] = pd.to_numeric(data[col], errors='coerce').astype(np.float32)
-        # 1) Заменяем ±inf на NaN, заполняем пропуски вперёд/назад
-        # 1) Инфицируем Inf → NaN, заливаем
+        
+        # 1) Заменяем ±inf → NaN и заполняем пропуски вперёд-назад
         data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
-        # 2) Оставляем только те строки, где всё ещё NaN **в фичах**, но не касаемся target
+        # 2) Убираем строки только там, где в фичах ещё остались NaN,
+        #    но не трогаем столбец 'target' (и не удаляем по нему).
         features = [c for c in data.columns if c not in ("target", "timestamp", "symbol")]
-        # удаляем строки, где **хотя бы в одной фиче** стоит NaN
         data = data.dropna(subset=features).reset_index(drop=True)
 
 
@@ -1156,19 +1156,32 @@ def build_bullish_neural_network(data):
 
     # --- 1. Подготовка данных и feature engineering должен быть выполнен до вызова ---
     # Предполагаем, что data уже содержит features и колонки ['target','timestamp','symbol']
+    # --- 1) Сразу вынесем целевой столбец в отдельную переменную и очистим data от NaN/inf ---
+    if "target" not in data.columns:
+        raise KeyError("Входной DataFrame не содержит колонки 'target'")
+    # сохраняем y_raw с оригинальными индексами
+    y_raw = data["target"].astype(int).copy()
+
+    # заменяем inf → NaN, затем заполняем по столбцам
+    data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+
+    # оставляем только признаки (не трогаем y_raw)
     features = [c for c in data.columns if c not in ("target", "timestamp", "symbol")]
-    X_raw = data[features].apply(pd.to_numeric, errors="coerce")
-    y_raw = data["target"].astype(int).values
-    # Удаляем столбцы полностью NaN
-    X_raw = X_raw.dropna(axis=1, how="all")
-    imputer = SimpleImputer(strategy="median")
-    X = imputer.fit_transform(X_raw)
-    # --- Балансировка классов до split (можно опционально на train only) ---
-    X, y_raw = balance_classes(X, y_raw)
+    X_df = data[features].copy()
+
+    # 2) Отбрасываем строки, где после заполнения всё ещё есть NaN
+    valid_idx = X_df.dropna(how="any").index
+    X_df = X_df.loc[valid_idx]
+    # и синхронно обрезаем y_raw
+    y = y_raw.loc[valid_idx].values
+
+    # 3) Преобразуем X в числовой массив и балансируем классы
+    X = X_df.apply(pd.to_numeric, errors="coerce").values
+    X, y = balance_classes(X, y)
 
     # 2. Train/Val split с стратификацией и масштабирование
     X_train, X_val, y_train, y_val = train_test_split(
-        X, y_raw, test_size=0.2, random_state=42, stratify=y_raw
+        X, y, test_size=0.2, random_state=42, stratify=y
     )
     scaler = RobustScaler(quantile_range=(10, 90))
     X_train = scaler.fit_transform(X_train)
