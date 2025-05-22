@@ -810,7 +810,17 @@ def extract_features(data, multi_horizon=[1,2,3], profit_thresholds=[0.00005, 0.
         data = data.copy()
         for col in ['open', 'high', 'low', 'close', 'volume']:
             data[col] = pd.to_numeric(data[col], errors='coerce').astype(np.float32)
+        # 1) Заменяем ±inf на NaN, заполняем пропуски вперёд/назад
         data = data.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+
+        # 2) Удаляем все строки, где остались NaN
+        data = data.dropna().reset_index(drop=True)
+
+        # 3) Теперь вы можете спокойно брать features и таргет
+        features = [c for c in data.columns if c not in ("target","timestamp","symbol")]
+        X_df = data[features].apply(pd.to_numeric, errors="coerce")
+        y     = data["target"].astype(int).values
+
         data = convert_df_dtypes(data)
 
         # Базовая метка рынка (bullish → 0)
